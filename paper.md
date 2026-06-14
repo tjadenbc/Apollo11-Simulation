@@ -42,20 +42,21 @@ the pessimistic extreme, an early NASA-commissioned reliability assessment is re
 put the probability of landing a crew on the Moon and returning them safely at under five
 percent — a figure so discouraging that management is said to have set aside numerical risk
 assessment for the remainder of the programme rather than publish it [1, 2]. Joseph Shea's early systems-architecting team had put it in starker, more visceral terms: thirty astronauts would be lost before three returned safely [3]. At the
-optimistic extreme stood the programme's own ambitions: Apollo paid, by its leadership's account,
-"extreme attention … to reliability and crew safety" [2], and its formal reliability goals were
-correspondingly demanding — aspirations, it should be stressed, rather than measured expectations. Between these poles lay the judgement of the people closest to the
+optimistic extreme stood the programme's own ambitions, which placed crew safety far above the
+mission: the Apollo Spacecraft Program Office held that "the probability of safe return of the
+crew" should be "approximately one-hundred times greater than the probability of mission
+success" [4] — a design aspiration, it should be stressed, rather than a measured expectation. Between these poles lay the judgement of the people closest to the
 flight. Commander Neil Armstrong, asked afterward for his pre-flight assessment, recalled giving
 the crew roughly a ninety-percent chance of returning alive but only even odds of accomplishing
-the landing on the first attempt [4]. Command module pilot Michael Collins was blunter still: he "wouldn't give better than even
-odds on a successful landing and return" [5]. The wider world hedged in its own currencies — bookmakers had reportedly offered a thousand to
+the landing on the first attempt [5]. Command module pilot Michael Collins was blunter still: he "wouldn't give better than even
+odds on a successful landing and return" [6]. The wider world hedged in its own currencies — bookmakers had reportedly offered a thousand to
 one against a man reaching the Moon before 1971 and are said to have closed their books by launch week, and
 the crew, unable to obtain ordinary life insurance, signed sheets of autographed covers for their
-families to sell in the event they did not return [6]. The contingency was prepared at the
+families to sell in the event they did not return [7]. The contingency was prepared at the
 highest level: the White House of U.S. President Richard Nixon kept a statement — *In Event of Moon Disaster*, drafted by
 speechwriter William Safire — ready for the President to deliver if Armstrong and Aldrin were
 stranded on the lunar surface, after which NASA would close down communications and a clergyman
-would commend their souls as in a burial at sea [7].
+would commend their souls as in a burial at sea [8].
 
 What none of these estimates rested on was a *physical* model of the flight. The programme's
 reliability figures were component-and-subsystem apportionments rolled up through fault trees;
@@ -86,7 +87,7 @@ programme itself did — the loss of the *mission* from the loss of the *crew*.
 Across ten thousand such trials, we estimate a
 mission-success probability of 85.5% (95% confidence interval 84.7–86.1%) and a crew-survival
 probability of 93.4%, where a mission counts as a success if the crew reached the lunar surface and
-all three returned to Earth alive — U.S. President John F. Kennedy's stated objective for the programme [8] — even where
+all three returned to Earth alive — U.S. President John F. Kennedy's stated objective for the programme [9] — even where
 a recovered in-flight anomaly occurred. The remainder of the paper describes the simulation (Section 2), the
 failure and crew-survival models (Section 3), the validation of the nominal trajectory against
 Apollo 11's flown values (Section 4), and the results and their decomposition by failure mode
@@ -158,7 +159,7 @@ handling rather than by interpolation between coarse samples.
 
 Lunar position is the single largest determinant of the return-plane geometry, and it is taken
 from a real ephemeris. The Moon's
-position is evaluated from a truncated Meeus series [9] (Astronomical Algorithms, ch. 47) at the
+position is evaluated from a truncated Meeus series [10] (Astronomical Algorithms, ch. 47) at the
 true Apollo 11 epoch (Julian Date 2 440 419.0639, i.e. 1969-07-16 13:32:00 UTC liftoff), and
 Earth's rotation is anchored to the real Greenwich Mean Sidereal Time at launch; the ephemeris
 was validated against Meeus's own worked example to better than one arc-second. Because a single
@@ -166,7 +167,7 @@ routine is the sole source of the Moon's position, this real-sky geometry propag
 consistently through translunar injection, lunar-orbit insertion, trans-Earth injection, and the
 return.
 
-Lunar gravity itself is evaluated to degree and order eight from the GRAIL **GRGM1200A** [10]
+Lunar gravity itself is evaluated to degree and order eight from the GRAIL **GRGM1200A** [11]
 spherical-harmonic model (coefficients through degree 12 are embedded from the NASA Planetary
 Data System for headroom, with the implied J₂ and C₂₂ checked against the code's independently
 sourced lunar constants to within 0.003 %). The field is evaluated with a singularity-free Cunningham
@@ -181,13 +182,13 @@ operational effect — landing-point dispersion — is injected separately as a 
 The vehicle is modelled as the Apollo 11 stack with its as-flown mass properties. The Saturn V
 contributes the S-IC, S-II, and S-IVB stages; the spacecraft comprises the Command and Service
 Module *Columbia* and the Lunar Module *Eagle*. Masses are taken from Orloff's *Apollo by the
-Numbers* [11], with the service-module dry mass re-derived from the CSM-107
+Numbers* [12], with the service-module dry mass re-derived from the CSM-107
 as-flown mass statement: *Columbia* is ~28 795 kg at translunar injection (command module
 5 557 kg + service-module dry 4 825 kg + SPS propellant 18 413 kg), and *Eagle* is 15 103 kg
 (descent stage 10 149 kg + ascent stage 4 954 kg). The propulsion set carries each engine's
 rated performance: the Service Propulsion System (SPS) at 91 200 N and a specific impulse of 314.5 s;
 the descent engine (Descent Propulsion System, DPS) throttleable between 45 040 N and 4 660 N
-(its 10 % minimum); and the ascent engine (Ascent Propulsion System, APS) at 15 700 N [12]. Because every burn is integrated rather than applied as an instantaneous
+(its 10 % minimum); and the ascent engine (Ascent Propulsion System, APS) at 15 700 N [13]. Because every burn is integrated rather than applied as an instantaneous
 ΔV, the as-flown thrust and specific-impulse values directly set the burn durations, which
 provides an independent check on the calibration: the dispersed fleet reproduces Apollo's
 lunar-orbit-insertion and trans-Earth-injection burn times to within roughly three percent
@@ -258,7 +259,7 @@ reachable on the return opportunity flown.
 
 Throughout, the phase timeline is held to Apollo's: a 26.7 h interval from lunar-orbit insertion
 to powered descent and a 10.9 h interval from ascent to trans-Earth injection, giving a total
-mission duration of about 8.18 days against Apollo 11's 8.14 [12].
+mission duration of about 8.18 days against Apollo 11's 8.14 [13].
 
 ### 2.5 Monte Carlo dispersions and structure
 
@@ -341,13 +342,13 @@ historical record, not a measured rate. Table 1 collects them.
 | S-IVB ignition failure | 0.5% | Apollo 6's S-IVB failed to reignite; informed by the identified igniter-line fuel-leak modes. |
 | SM catastrophic systems failure | 1 in 15 per mission (≈6.7%) | Empirical: one mission-ending service-module anomaly (Apollo 13) in fifteen crewed CSM flights. Struck at a uniform timeline fraction; the consequence depends on phase (see below). |
 | Docking failure | 0.95% per docking | ≈2 capture anomalies in ~21 programme dockings × the unrecovered fraction; applied independently at both the transposition-and-docking and the ascent-rendezvous dockings. |
-| LM surface electrical failure | 0.85% (0.17 × 0.05) | An anomaly rate × an unrecoverable fraction; anchored to Apollo 11's snapped ascent-engine arming circuit-breaker [13]. |
+| LM surface electrical failure | 0.85% (0.17 × 0.05) | An anomaly rate × an unrecoverable fraction; anchored to Apollo 11's snapped ascent-engine arming circuit-breaker [14]. |
 | LM tip-over at touchdown | 0.5% per landing | The LM's ~12° tip-over stability limit (Apollo 15 landed at ~11°). |
 | EVA suit / PLSS fatality | 0.1% per mission | Zero failures in 28 programme man-EVAs; the OPS backup was never used. Modelled as a single moonwalker lost. |
-| 1201/1202 computer alarm | 15% occurrence, 97% recovery | Apollo 11 itself fired five guidance-computer alarms, all recovered — a recoverable design/procedural event (a radar-switch configuration), not a random hardware hazard [13]. |
+| 1201/1202 computer alarm | 15% occurrence, 97% recovery | Apollo 11 itself fired five guidance-computer alarms, all recovered — a recoverable design/procedural event (a radar-switch configuration), not a random hardware hazard [14]. |
 | Landing-radar dropout | 10% per descent | Harmless except on a descent already at a fuel margin under ~5 s, where the degraded guidance loses the landing. |
 | Descent-propellant exhaustion | *emergent* | Not a fixed probability: arises when the hover-seek time (Section 2.5) and DPS performance dispersions together outlast the propellant. |
-| High-g entry structural failure | *emergent* | Trajectory-dependent: a loss when the integrated peak deceleration exceeds the CM's ~12 g structural limit (NASA TN D-6725 [14] cites 10 g guidance / ~12 g structural). |
+| High-g entry structural failure | *emergent* | Trajectory-dependent: a loss when the integrated peak deceleration exceeds the CM's ~12 g structural limit (NASA TN D-6725 [15] cites 10 g guidance / ~12 g structural). |
 
 The service-module systems failure deserves emphasis because it is the single largest
 contributor to mission loss (Section 5). It models the Apollo-13 class of event — a cryogenic
@@ -371,7 +372,7 @@ return path at all. Each path carries an estimated survival probability: ~0.98 f
 Launch Escape System abort, down to ~0.30 for a violent max-Q breakup; ~0.85–0.90 for the
 LM-lifeboat returns; ~0.40 for the worst-geometry surface SM failure; and ~0.10 for the
 post-jettison trans-Earth SM failure with no lifeboat. These values are anchored to the
-NASA Lunar Landing Operational Risk Model (LLORM) [15], the Launch Escape System's ~98% design
+NASA Lunar Landing Operational Risk Model (LLORM) [16], the Launch Escape System's ~98% design
 reliability, and the Apollo 13 free-return precedent.
 
 The model is resolved at the level of the individual crewman because the three were not
@@ -405,8 +406,8 @@ constrained of them. Section 6 returns to what this implies for the headline est
 The dispersed trials are only as meaningful as the nominal mission they perturb, so before
 presenting the Monte Carlo results we check that the nominal — the single deterministic
 flight flown with no dispersions — reproduces Apollo 11's actual trajectory. Table 2
-compares the nominal against the flown values (from the Saturn V Flight Evaluation Report [16],
-Orloff's *Apollo by the Numbers* [11], and the Apollo 11 Mission Report [13]).
+compares the nominal against the flown values (from the Saturn V Flight Evaluation Report [17],
+Orloff's *Apollo by the Numbers* [12], and the Apollo 11 Mission Report [14]).
 
 **Table 2. Nominal trajectory versus Apollo 11 as-flown.**
 
@@ -457,7 +458,7 @@ arc-second.
 
 We ran 10,000 trials (seed 37) on a 272-core cluster.
 A trial counts as a **mission success** if the crew reached the lunar surface *and* all
-three astronauts returned to Earth alive — U.S. President John F. Kennedy's stated objective for the programme [8] —
+three astronauts returned to Earth alive — U.S. President John F. Kennedy's stated objective for the programme [9] —
 even where a recovered in-flight anomaly occurred; it counts as a **failure** only if the landing was
 never achieved or at least one crew member died. We estimate a mission-success
 probability of **85.5%** (Wilson 95% CI 84.7–86.1%) and a crew-survival probability of
@@ -704,33 +705,34 @@ Methods/Section 2.)
    Research Center, NTRS 20190002249.
 3. Rechtin, E. (2000). *Systems Architecting of Organizations.* CRC Press, Boca Raton, FL.
    (Source of Joseph Shea's Apollo architecting-team reliability reckoning, as quoted in [2].)
-4. Armstrong, N. A. Interview with Alex Malley, CPA Australia, 2011 — "I thought we had a
+4. Sato, Y. (2006). *Reliability in the Apollo Program: A Balanced Approach Behind the Success.* Quest: The History of Spaceflight Quarterly 13(1).
+5. Armstrong, N. A. Interview with Alex Malley, CPA Australia, 2011 — "I thought we had a
    90 percent chance of getting back to Earth on that flight, but only a 50-50 chance of making
    a successful landing on the first attempt." Widely reported (e.g. CNN, 25 May 2012;
    *Scientific American*, 2012).
-5. Collins, M. Contribution to *Apollo Expeditions to the Moon* (E. M. Cortright, ed.), NASA
+6. Collins, M. Contribution to *Apollo Expeditions to the Moon* (E. M. Cortright, ed.), NASA
    SP-350, 1975 ("…I wouldn't give better than even odds on a successful landing and return").
-6. Apollo insurance covers. The Apollo 11 crew, unable to obtain affordable in-flight life
+7. Apollo insurance covers. The Apollo 11 crew, unable to obtain affordable in-flight life
    insurance, signed postal "covers" for their families to sell in the event they did not
    return. See NPR Planet Money, "What the Apollo Astronauts Did for Life Insurance,"
    30 August 2012.
-7. Safire, W. (1969). *In Event of Moon Disaster.* Memorandum to H. R. Haldeman, 18 July 1969.
+8. Safire, W. (1969). *In Event of Moon Disaster.* Memorandum to H. R. Haldeman, 18 July 1969.
    U.S. National Archives (Richard Nixon Presidential Library and Museum materials).
-8. Kennedy, J. F. (1961). *Special Message to the Congress on Urgent National Needs* ("…landing
+9. Kennedy, J. F. (1961). *Special Message to the Congress on Urgent National Needs* ("…landing
    a man on the Moon and returning him safely to the Earth"), 25 May 1961. John F. Kennedy
    Presidential Library and Museum.
-9. Meeus, J. (1998). *Astronomical Algorithms,* 2nd ed. Willmann-Bell, Richmond, VA.
-10. Goossens, S., et al. (2016). *A Global Degree and Order 1200 Model of the Lunar Gravity
+10. Meeus, J. (1998). *Astronomical Algorithms,* 2nd ed. Willmann-Bell, Richmond, VA.
+11. Goossens, S., et al. (2016). *A Global Degree and Order 1200 Model of the Lunar Gravity
    Field Using GRAIL Mission Data (GRGM1200A).* 47th Lunar and Planetary Science Conference,
    Abstract #1484.
-11. Orloff, R. W. (2000). *Apollo by the Numbers: A Statistical Reference.* NASA SP-2000-4029,
+12. Orloff, R. W. (2000). *Apollo by the Numbers: A Statistical Reference.* NASA SP-2000-4029,
     NASA History Division, Washington, DC.
-12. NASA (1969). *Apollo 11 Press Kit.* Release No. 69-83K, 6 July 1969. NASA NTRS 19690022248.
-13. NASA Manned Spacecraft Center (1969). *Apollo 11 Mission Report.* MSC-00171, November 1969.
-14. Graves, C. A., and Harpold, J. C. (1972). *Apollo Experience Report — Mission Planning for
+13. NASA (1969). *Apollo 11 Press Kit.* Release No. 69-83K, 6 July 1969. NASA NTRS 19690022248.
+14. NASA Manned Spacecraft Center (1969). *Apollo 11 Mission Report.* MSC-00171, November 1969.
+15. Graves, C. A., and Harpold, J. C. (1972). *Apollo Experience Report — Mission Planning for
     Apollo Entry.* NASA Technical Note TN D-6725, Manned Spacecraft Center, Houston, TX.
-15. Mattenberger, C., Putney, B., Rust, R., and Derkowski, B. (2010). *Lunar Landing
+16. Mattenberger, C., Putney, B., Rust, R., and Derkowski, B. (2010). *Lunar Landing
     Operational Risk Model.* 10th International Probabilistic Safety Assessment and Management
     Conference (PSAM-10), Seattle, WA. NASA JSC-CN-20247 (NTRS 20100018589).
-16. Marshall Space Flight Center (1969). *Saturn V Launch Vehicle Flight Evaluation Report —
+17. Marshall Space Flight Center (1969). *Saturn V Launch Vehicle Flight Evaluation Report —
     AS-506 Apollo 11 Mission.* MPR-SAT-FE-69-9, NASA MSFC, Huntsville, AL.
