@@ -56,8 +56,13 @@ p { margin: 0 0 0.6em; }
 strong { font-weight: 700; }
 code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.88em;
        background: #f2f2f2; padding: 0 2px; border-radius: 3px; }
+/* Tables may break across pages (so a long table flows right after its caption
+   instead of jumping wholesale to the next page and leaving a blank gap); rows
+   stay intact and the header repeats on each page. */
 table { border-collapse: collapse; width: 100%; font-size: 8.6pt;
-        margin: 0.6em 0 1.1em; page-break-inside: avoid; }
+        margin: 0.6em 0 1.1em; }
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; break-inside: avoid; }
 th, td { border: 1px solid #bbb; padding: 3px 6px; text-align: left;
          vertical-align: top; hyphens: none; }
 th { background: #eee; font-weight: 700; }

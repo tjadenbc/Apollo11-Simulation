@@ -767,9 +767,9 @@ def generate_survival_report(df, outdir=OUTDIR):
     ax.set_yticklabels([_pretty(c) for c in by_cause.index], fontsize=9)
     ax.invert_yaxis()
     ax.set_xlabel("Astronaut deaths (count)")
-    ax.set_title(f"Crew Survival — all 3 returned in {_all_three}/{n} missions "
-                 f"({100*_all_three/n:.1f}%); {total_deaths} astronaut deaths "
-                 f"of {3*n} ({100*total_deaths/(3*n):.2f}%) — by cause")
+    ax.set_title(f"Astronaut deaths by cause "
+                 f"({total_deaths} of {3*n} astronaut-missions, "
+                 f"{100*total_deaths/(3*n):.1f}%)")
     for b, c in zip(bars, by_cause.values):
         ax.text(c + total_deaths*0.005, b.get_y() + b.get_height()/2,
                 f"{int(c)} ({100*c/total_deaths:.0f}%)", va='center', fontsize=8)
