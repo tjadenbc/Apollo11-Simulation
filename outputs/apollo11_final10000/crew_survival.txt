@@ -1,0 +1,261 @@
+======================================================================
+APOLLO 11 — CREW SURVIVAL ANALYSIS (per astronaut)
+======================================================================
+Total missions simulated:           10000
+Mission success (Moon + return):    8545  (85.5%)
+
+PER-ASTRONAUT SURVIVAL
+----------------------------------------------------------------------
+  Astronaut   Role                            Survived     Rate
+  Armstrong   CDR — Lunar Module (surface)    9347/10000   93.5%
+  Aldrin      LMP — Lunar Module (surface)    9343/10000   93.4%
+  Collins     CMP — Command Module (orbit)    9530/10000   95.3%
+
+  Astronauts returned alive per mission:
+     0 of 3 survived:   470 missions (4.7%)
+     1 of 3 survived:   181 missions (1.8%)
+     2 of 3 survived:     8 missions (0.1%)
+     3 of 3 survived:  9341 missions (93.4%)
+
+  Total astronaut-flights:  30000
+  Returned alive:           28220  (94.1%)
+  Lost:                     1780
+
+WHY THE NUMBERS DIFFER BY ASTRONAUT
+----------------------------------------------------------------------
+Survival diverges by which vehicle each crewman occupies during
+the lunar phase. Collins (CMP) stays in the Command Module in
+lunar orbit and is NOT exposed to powered-descent, surface, or
+ascent risk. If the Lunar Module crew is lost, Collins's
+documented contingency was to return to Earth ALONE — so an LM
+loss does not kill him, though he must still complete a solo
+Earth return (modeled success rate 98.8%, from this
+run's own TEI+entry statistics).
+
+Armstrong (CDR) and Aldrin (LMP) ride the Lunar Module to the
+surface and back, exposed to every risk Collins faces PLUS the
+descent/surface/ascent phases — so their survival is lower.
+
+NOTE: Armstrong and Aldrin share the same vehicle for every
+phase this simulation models, so their survival is identical
+here. Distinguishing them would require individual-level risks
+(EVA suit failure, a fall, a medical event) that are not
+modeled and for which no sourced rates exist. The meaningful,
+defensible distinction is Collins (CSM) vs the LM crew.
+
+======================================================================
+OUTCOME BREAKDOWN — what happened to the crew, by failure mode
+======================================================================
+
+  launch_parking_orbit_decays_into_atmosphere
+     Trials with this failure: 223
+     Recovery path: abort_SPS_deorbit
+     Survival probability: 85%
+     Crew survived (sampled): 196/223 (88%)
+     Explanation:
+       Perigee below 80 km — orbit will decay in hours to days, but crew
+       has time. CSM separates from S-IVB and uses SPS retrograde burn to
+       set up controlled entry. The 85% reflects the additional risk that
+       the unstable orbit might force entry at a bad flight path angle if
+       SPS can't be commanded in time.
+
+  sm_failure_lunar_orbit
+     Trials with this failure: 115
+     Recovery path: lm_lifeboat_abort_lunar
+     Survival probability: 85%
+     Crew survived (sampled): 91/115 (79%)
+     Explanation:
+       Catastrophic SM failure in lunar orbit (pre-descent or post-
+       ascent). LM lifeboat available for most of this window, but the
+       abort starts from lunar orbit — TEI must be flown on DPS/APS with
+       tighter consumables than Apollo 13's free-return geometry.
+       Slightly worse than the translunar case (~85%).
+
+  surface_lm_electrical_failure
+     Trials with this failure: 96
+     Recovery path: ascent_stage_cannot_arm
+     Survival probability: 0%
+     Crew survived (sampled): 0/96 (0%)
+     Explanation:
+       An unrecoverable LM electrical/switchgear failure on the surface
+       prevents arming the ascent engine. Sourced anchor: Apollo 11's own
+       snapped ascent-engine arming breaker (closed with a felt-tip pen)
+       — 1 serious incident in 6 landings, with ~5% of such anomalies
+       assumed beyond any workaround. The LM crew is stranded on the
+       surface; Collins returns alone.
+
+  launch_structural_failure_max_q_exceeded
+     Trials with this failure: 140
+     Recovery path: abort_mode_I_LES_late
+     Survival probability: 30%
+     Crew survived (sampled): 50/140 (36%)
+     Explanation:
+       Vehicle breakup during transonic flight (~50-70s after liftoff).
+       The LES (Launch Escape System) is designed for exactly this — but
+       max-Q breakup is violent and the LES requires the CM to still be
+       intact when LES fires. Historical precedent: no Apollo vehicle
+       ever had max-Q breakup, so this is a worst-case estimate. The 30%
+       reflects: ~98% LES nominal reliability × ~30% chance the CM is
+       still intact and oriented favorably after the breakup event.
+
+  transposition_docking_failure
+     Trials with this failure: 96
+     Recovery path: landing_aborted_healthy_return
+     Survival probability: 99%
+     Crew survived (sampled): 95/96 (99%)
+     Explanation:
+       Transposition & docking after TLI failed unrecoverably — the LM
+       cannot be extracted from the S-IVB, the landing is aborted, and
+       the crew returns on a fully healthy CSM (free-return/direct abort;
+       this nearly ended Apollo 14's landing before its hard-dock
+       workaround succeeded). Mission failure, but survival is
+       essentially that of a normal return (~99%). Same sourced ~0.95%
+       per-docking rate as the rendezvous docking.
+
+  sm_failure_transearth
+     Trials with this failure: 179
+     Recovery path: no_lifeboat_on_return
+     Survival probability: 10%
+     Crew survived (sampled): 20/179 (11%)
+     Explanation:
+       Catastrophic SM failure during the trans-Earth coast — the LM was
+       jettisoned before TEI; there is no lifeboat. It mostly kills all
+       three: the CM's entry batteries and surge tanks last hours, not
+       the days usually remaining to entry. Survival (~10%) is plausible
+       only when the failure strikes late enough — within the last few
+       hours before entry — that the crew can ride the remaining
+       consumables down and return alive.
+
+  missed_lunar_soi_after_mcc
+     Trials with this failure: 22
+     Recovery path: missed_lunar_soi_after_mcc
+     Survival probability: 98%
+     Crew survived (sampled): 21/22 (95%)
+
+  descent_descent_propellant_exhausted
+     Trials with this failure: 116
+     Recovery path: abort_stage_LM_ascent_engine
+     Survival probability: 70%
+     Crew survived (sampled): 76/116 (66%)
+     Explanation:
+       LM ran out of DPS propellant during powered descent. Apollo's
+       'abort stage' procedure ignites the APS (ascent engine) while the
+       descent stage is still attached, separating in-flight and putting
+       the ascent stage into lunar orbit for CSM rendezvous.
+       Effectiveness depends on altitude and descent rate at fuel
+       exhaustion: high altitude / low descent rate → high success; close
+       to surface at high vertical velocity → no time to abort. The 70%
+       reflects the typical distribution of altitudes/speeds at fuel
+       exhaustion in this simulation.
+
+  surface_lm_tipover
+     Trials with this failure: 44
+     Recovery path: lm_tipped_no_ascent
+     Survival probability: 0%
+     Crew survived (sampled): 0/44 (0%)
+     Explanation:
+       The LM tipped beyond recovery at touchdown (0-in-6 landings
+       historically against a ~12 deg stability spec; Apollo 15's 11 deg
+       was the worst case). No ascent is possible from a tipped LM and no
+       rescue capability exists. LM crew lost; Collins returns alone.
+
+  entry_structural_failure_high_g
+     Trials with this failure: 101
+     Recovery path: CM_breakup_in_atmosphere
+     Survival probability: 0%
+     Crew survived (sampled): 0/101 (0%)
+     Explanation:
+       Atmospheric entry produced peak g-load above the Command Module's
+       12 g structural limit (the simulation's
+       entry_structural_failure_high_g threshold; NASA TN D-6725 cites 10
+       g as the guidance limit and ~12 g structural). Structural failure
+       of the heat shield or pressure vessel leads to crew loss.
+
+  surface_eva_suit_fatality
+     Trials with this failure: 8
+     Recovery path: eva_fatality_partner_returns
+     Survival probability: 0%
+     Crew survived (sampled): 0/8 (0%)
+     Explanation:
+       A terminal suit/PLSS failure during the surface EVA kills one of
+       the two moonwalkers (0 failures in 28 program man-EVAs; the fatal
+       branch requires the anomaly to outrun the OPS backup and an
+       immediate LM repress, within ~60 m of the hatch). Modeled as one
+       LM-crew death (p_survive 0.5 across the exposed pair); the
+       survivor and Collins return.
+
+  rendezvous_docking_failure
+     Trials with this failure: 83
+     Recovery path: eva_crew_transfer
+     Survival probability: 90%
+     Crew survived (sampled): 77/83 (93%)
+     Explanation:
+       The LM closed with the CSM but the docking mechanism failed
+       unrecoverably. SOURCED RATE: capture anomalies on 2 of ~21 program
+       dockings (Apollo 14's six attempts; Skylab 2's interlock bypass),
+       times ~10% chance the independent ring-latch hard-dock workaround
+       also fails — ~0.95% unrecovered per docking. The documented
+       contingency is a suited EVA crew transfer from the LM to the CSM
+       side hatch, modeled at ~90% survival (estimate — planned and
+       trained, never flown). Exposure is LM-crew-only; Collins is in the
+       healthy CSM.
+
+  sm_failure_translunar
+     Trials with this failure: 245
+     Recovery path: lm_lifeboat_abort
+     Survival probability: 90%
+     Crew survived (sampled): 224/245 (91%)
+     Explanation:
+       Catastrophic SM systems failure (Apollo-13 class: cryo tank / fuel
+       cell) during the outbound coast with the LM attached. The LM-
+       lifeboat abort is the demonstrated recovery — Apollo 13 survived
+       exactly this — but with real margin risk (power, water, CO2
+       scrubbing, entry-corridor control). ~90% survival (1-for-1
+       historically, with documented thin margins). Sourced occurrence: 1
+       catastrophic SM failure in 15 crewed CSM flights.
+
+  sm_failure_surface
+     Trials with this failure: 57
+     Recovery path: emergency_liftoff_to_dying_csm
+     Survival probability: 40%
+     Crew survived (sampled): 21/57 (37%)
+     Explanation:
+       Catastrophic SM failure while the LM is on the surface: Collins is
+       alone in the failing CSM; the LM must launch immediately (outside
+       the planned liftoff window, degraded rendezvous geometry) and the
+       combined stack then attempts a lifeboat return with a partially-
+       expended LM. The worst pre-jettison geometry; ~40% (estimate — no
+       historical analogue).
+
+  launch_s_ivb_first_ignition_failure
+     Trials with this failure: 58
+     Recovery path: abort_mode_IV_COI
+     Survival probability: 95%
+     Crew survived (sampled): 57/58 (98%)
+     Explanation:
+       S-IVB failed to ignite after S-II burnout. This is exactly the
+       scenario Mode IV (Contingency Orbit Insertion) was designed for:
+       CSM separates, SPS burns to inject into a stable Earth parking
+       orbit, then performs a normal entry and splashdown. SPS has ample
+       fuel — used only for lunar maneuvers in nominal mission. Crew
+       survives easily.
+
+  descent_radar_dropout_marginal
+     Trials with this failure: 4
+     Recovery path: descent_radar_dropout_marginal
+     Survival probability: 70%
+     Crew survived (sampled): 3/4 (75%)
+
+  launch_s_ic_underperformance_crash
+     Trials with this failure: 9
+     Recovery path: abort_mode_I_LES
+     Survival probability: 85%
+     Crew survived (sampled): 6/9 (67%)
+     Explanation:
+       S-IC underperformance is a SLOW failure — the rocket loses
+       altitude over many seconds. EDS (Emergency Detection System) or
+       crew commands LES Mode I: solid-fuel escape motor pulls CM clear
+       of the stack, deploys parachutes, splashes down in Atlantic.
+       Apollo Pad Abort Test 1 & 2 validated this in 1963-65. The 85%
+       reflects LES nominal reliability minus edge cases (LES misfire,
+       parachute failure).

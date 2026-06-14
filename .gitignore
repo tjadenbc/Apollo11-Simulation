@@ -1,0 +1,24 @@
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+.ipynb_checkpoints/
+
+# --- Monte Carlo output ---
+# Exclude every run directory and stray artifact under outputs/ EXCEPT the
+# single definitive run that the paper cites. New dev runs are ignored by
+# default; add another `!outputs/<name>/` line to publish one.
+outputs/*
+!outputs/apollo11_final10000/
+
+# Per-trial debug JSONs are bulky and regenerable; the per-trial *results*
+# (results.csv / results_with_survival.csv) are kept. Drop this line to publish
+# the debug JSONs too.
+outputs/apollo11_final10000/trials/
+
+# --- Generated documents ---
+# The review PDF is a build artifact of `make_pdf.py` from paper.md; regenerate
+# rather than track it.
+paper.pdf
