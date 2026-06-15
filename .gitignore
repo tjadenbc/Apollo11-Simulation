@@ -19,6 +19,9 @@ outputs/*
 outputs/apollo11_final10000/trials/
 
 # --- Generated documents ---
-# The review PDF is a build artifact of `make_pdf.py` from paper.md; regenerate
-# rather than track it.
+# The review PDF / Word doc are build artifacts of `make_pdf.py` / `make_docx.py`
+# from paper.md; regenerate rather than track them. paper_render.html is a
+# transient intermediate.
 paper.pdf
+paper.docx
+paper_render.html

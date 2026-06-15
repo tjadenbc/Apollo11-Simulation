@@ -1,6 +1,9 @@
 # Better Than Even Odds: A Physics-Integrated Monte Carlo Reassessment of Apollo 11's Probability of Success
 
-*Target venue: Journal of the British Interplanetary Society (JBIS)*
+Brett Tjaden  
+Professor, Department of Computer Science, James Madison University  
+800 South Main Street, Harrisonburg, VA 22807, U.S.A.  
+tjadenbc@jmu.edu
 
 ## Abstract
 
@@ -25,6 +28,8 @@ crew's own intuition and the programme's eventual record of six successful landi
 attempts with no in-flight fatalities — and far above the early pessimistic forecast —
 suggesting that a faithful physics model converges on a defensible mid-80s success probability
 that contemporary risk assessment, lacking the computation, could not pin down.
+
+**Keywords:** Apollo 11; Monte Carlo simulation; mission success probability; crew survival; spaceflight reliability; trajectory simulation
 
 ## 1. Introduction
 
