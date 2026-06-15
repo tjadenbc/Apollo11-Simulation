@@ -680,7 +680,7 @@ rather than against history.
 ## Code and Data Availability
 
 The complete simulation source code is openly available at
-`https://github.com/<user>/<repo>` *(URL to be finalised)* under an open-source licence, so
+`https://github.com/tjadenbc/Apollo11-Simulation` under an open-source licence, so
 that any reader may **reproduce, independently verify, or improve** the results presented here.
 The repository includes the simulation itself (`apollo11.py`), the crew-survival model
 (`crew_survival.py`), the figure/dashboard generator (`generate_outputs.py`), the embedded
