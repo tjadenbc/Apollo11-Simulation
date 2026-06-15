@@ -14,7 +14,7 @@ Dependencies:
     #   Debian/Ubuntu:     apt-get install pandoc
 
 Usage:
-    python3 make_docx.py            # writes paper.docx next to this script
+    python3 make_docx.py            # writes TJADEN_2026_06_15.docx next to this script
 """
 import os
 import sys
@@ -22,6 +22,7 @@ import shutil
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+STEM = "TJADEN_2026_06_15"  # output filename stem (author_date) for the generated .docx
 
 # Light styling so Word gets bordered tables and a centered title/author block.
 CSS = """
@@ -47,7 +48,7 @@ def build(md_path=None, docx_path=None):
     import markdown
 
     md_path = md_path or os.path.join(HERE, "paper.md")
-    docx_path = docx_path or os.path.join(HERE, "paper.docx")
+    docx_path = docx_path or os.path.join(HERE, STEM + ".docx")
     pandoc = _find_pandoc()
 
     with open(md_path) as f:

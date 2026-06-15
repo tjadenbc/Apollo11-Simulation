@@ -22,6 +22,11 @@ outputs/apollo11_final10000/trials/
 # The review PDF / Word doc are build artifacts of `make_pdf.py` / `make_docx.py`
 # from paper.md; regenerate rather than track them. paper_render.html is a
 # transient intermediate.
-paper.pdf
-paper.docx
+TJADEN_2026_06_15.pdf
+TJADEN_2026_06_15.docx
 paper_render.html
+
+# --- Submission staging ---
+# Local working folder for assembling the JBIS submission (manuscript copies,
+# cover letter, forms, correspondence); never tracked.
+JBIS2026/

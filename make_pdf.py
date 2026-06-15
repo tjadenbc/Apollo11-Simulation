@@ -18,7 +18,7 @@ Dependencies:
 # DYLD_FALLBACK_LIBRARY_PATH set, so a plain `python3 make_pdf.py` just works.
 
 Usage:
-    python3 make_pdf.py            # writes paper.pdf next to this script
+    python3 make_pdf.py            # writes TJADEN_2026_06_15.pdf next to this script
 """
 import os
 import sys
@@ -26,6 +26,7 @@ import re
 import base64
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+STEM = "TJADEN_2026_06_15"  # output filename stem (author_date) for the generated PDF
 
 
 def _import_weasyprint():
@@ -77,7 +78,7 @@ def build(md_path=None, pdf_path=None):
     import markdown
 
     md_path = md_path or os.path.join(HERE, "paper.md")
-    pdf_path = pdf_path or os.path.join(HERE, "paper.pdf")
+    pdf_path = pdf_path or os.path.join(HERE, STEM + ".pdf")
 
     HTML = _import_weasyprint()  # fail fast (and re-exec on macOS) before doing work
 

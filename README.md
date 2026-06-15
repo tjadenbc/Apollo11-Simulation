@@ -51,7 +51,8 @@ limitations.
 | `outputs/apollo11_final10000/` | **The definitive run**: per-trial results CSVs, the nominal trajectory, captured targeting products, the generated dashboard, and figures. |
 | `CLAUDE.md` | Detailed architecture / status / flags reference. |
 | `paper.md` | The accompanying manuscript draft. |
-| `make_pdf.py` | Builds a review `paper.pdf` from `paper.md` (Markdown → PDF via WeasyPrint; figures embedded). |
+| `make_pdf.py` | Builds a review PDF (`TJADEN_2026_06_15.pdf`) from `paper.md` (Markdown → PDF via WeasyPrint; figures embedded). |
+| `make_docx.py` | Builds a Word version (`TJADEN_2026_06_15.docx`) from `paper.md` (Markdown → HTML → DOCX via pandoc; figures + tables embedded). |
 
 ## Quick start
 
