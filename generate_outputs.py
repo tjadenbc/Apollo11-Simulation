@@ -4,7 +4,7 @@ Apollo 11 Monte Carlo: post-processing and output generation.
 Reads results.csv and the nominal trajectory, produces:
   - results.csv (already exists from main())
   - summary.txt
-  - 6 plots (PNG)
+  - 7 plots (PNG)
   - dashboard.html (consolidates everything)
   - Copy of apollo11.py source
 """
@@ -19,8 +19,53 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D   # noqa: F401
 
-OUTDIR = "outputs/apollo11_final10000"
+OUTDIR = "outputs/final"
 SIMDIR = "."   # apollo11.py lives in the project dir (run from there)
+
+
+# Dashboard stylesheet, inlined into dashboard.html at generation time. Kept as
+# an embedded constant so the generator is self-contained (no external .css to
+# ship). Light "system" theme: #f5f5f7 canvas, white cards, blue "context" /
+# amber "caveat" callouts. (No literal close-style tag below — this is inlined
+# into a real <style> element.)
+_DASH_STYLE = """\
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+                     sans-serif; margin: 0; padding: 24px;
+                     background: #f5f5f7; color: #1d1d1f; }
+h1 { font-weight: 600; margin-bottom: 4px; font-size: 28px; }
+h2 { font-weight: 500; margin-top: 32px; border-bottom: 2px solid #d2d2d7;
+       padding-bottom: 8px; font-size: 20px; }
+.summary-card { background: white; padding: 18px 24px; border-radius: 12px;
+                  box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin: 16px 0; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+           margin: 16px 0; }
+.stat { background: white; padding: 14px; border-radius: 10px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.stat .label { color: #6e6e73; font-size: 12px; text-transform: uppercase;
+                  letter-spacing: 0.5px; }
+.stat .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
+table { border-collapse: collapse; width: 100%; background: white;
+          border-radius: 10px; overflow: hidden;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+th, td { padding: 9px 14px; text-align: left;
+            border-bottom: 1px solid #e8e8ed; vertical-align: top; }
+th { background: #f9f9fb; font-weight: 600; color: #6e6e73; font-size: 12px;
+       text-transform: uppercase; letter-spacing: 0.4px; }
+tr:last-child td { border-bottom: none; }
+tr.ph-header td { background: #f0f0f4; color: #1d1d1f; font-size: 12px;
+                    letter-spacing: 0.5px; }
+.plot { background: white; padding: 16px; border-radius: 10px; margin: 12px 0;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
+.plot img { max-width: 100%; height: auto; }
+.caveat { background: #fffbeb; border-left: 4px solid #f59e0b;
+            padding: 14px 18px; border-radius: 6px; margin: 14px 0;
+            font-size: 14px; line-height: 1.6; }
+.context { background: #eff6ff; border-left: 4px solid #3b82f6;
+            padding: 14px 18px; border-radius: 6px; margin: 14px 0;
+            font-size: 14px; line-height: 1.6; }
+code { background: #f3f4f6; padding: 2px 5px; border-radius: 3px;
+          font-size: 13px; }
+"""
 
 R_EARTH = 6_378_137.0
 R_MOON  = 1_737_400.0
@@ -56,7 +101,7 @@ FAILURE_EXPLANATIONS = {
     "launch_structural_failure_max_q_exceeded": (
         "Structural failure at max-Q",
         "Aerodynamic loading on the vehicle exceeded the design limit "
-        "(~50 kPa) during transonic flight. This can occur when off-nominal "
+        "(~60 kPa) during transonic flight. This can occur when off-nominal "
         "thrust profiles cause the rocket to accelerate too aggressively "
         "through the dense lower atmosphere."),
     "launch_s_ivb_first_ignition_failure": (
@@ -119,6 +164,23 @@ FAILURE_EXPLANATIONS = {
         "entry interface (122 km altitude) within five days of TEI. "
         "Either TEI ΔV was insufficient, or the post-burn trajectory was "
         "deflected away from Earth by Moon's residual gravity."),
+    "transearth_no_entry_after_mcc": (
+        "Trans-Earth return: no entry even after the MCC chain",
+        "The return trajectory still failed to intersect the Earth entry "
+        "interface (122 km) after the trans-Earth midcourse-correction chain "
+        "had been flown — the scheduled MCC opportunities and budget could not "
+        "recover the corridor from the post-TEI dispersion. Distinct from a raw "
+        "TEI miss: here the corrections were attempted but still couldn't place "
+        "the entry. Very rare (a single occurrence in the 10,000-trial run)."),
+    "descent_agc_alarm_unrecovered": (
+        "Unrecovered guidance-computer alarm during descent",
+        "A guidance-computer program alarm (the Apollo 11 1201/1202 "
+        "executive-overflow class) occurred during powered descent AND "
+        "coincided with an already-marginal landing, so it was not recovered "
+        "in time — modeled as a descent abort. On the actual flight all five "
+        "alarms were recovered (a known radar-switch / procedural cause, not a "
+        "hardware hazard); this is the rare tail where the alarm lands on a "
+        "marginal descent. Very rare (a single occurrence in the 10,000-trial run)."),
     "entry_structural_failure_high_g": (
         "Command Module destroyed by high-g entry",
         "Atmospheric entry exceeded the CM's 12 g structural limit (the "
@@ -238,6 +300,60 @@ FAILURE_EXPLANATIONS = {
         "did not complete the return. Attributed here (the actual cause of "
         "death) rather than to the upstream mode that only killed their "
         "crewmates."),
+    # No-landing-profile / missing-1969-hazard modes (default-OFF flags):
+    "sps_ignition_failure_loi": (
+        "SPS failed to ignite for lunar orbit insertion",
+        "The single, non-redundant Service Propulsion System engine failed "
+        "to start for LOI. Because Apollo 11 flew a pure free-return "
+        "approach, no LOI burn means the spacecraft simply swings around the "
+        "Moon and returns to a survivable Earth entry — the same path that "
+        "brought Apollo 13 home. The mission fails (no lunar orbit) but the "
+        "crew almost always survives."),
+    "sps_ignition_failure_tei": (
+        "SPS failed to ignite for trans-Earth injection",
+        "The single, non-redundant SPS engine failed to start for TEI. Once "
+        "captured in lunar orbit there is no free-return fallback, and the LM "
+        "lifeboat has already been jettisoned before TEI — the crew is "
+        "stranded with no propulsion to leave lunar orbit."),
+    "nav_platform_unrecoverable": (
+        "Guidance platform unrecoverably lost",
+        "The primary inertial guidance platform (IMU/optics) suffered an "
+        "unrecoverable loss. On a crewed vehicle this is largely survivable: "
+        "the crew flies on the backup attitude reference and the ground "
+        "computes the return over the tracking network — but the mission "
+        "objectives are lost and the entry corridor is at added risk."),
+    "cm_sm_separation_failure": (
+        "Command/Service Module separation failed",
+        "The CM/SM pyrotechnic separation did not fire, leaving the Service "
+        "Module attached at entry. The Command Module cannot hold its "
+        "heatshield-forward trim with the SM's mass attached and cannot fly "
+        "the entry corridor. A rare (~1-in-10,000-class) pyrotechnic "
+        "failure."),
+    "entry_heatshield_failure": (
+        "Ablative heatshield breach at entry",
+        "A char-through or delamination of the ablative heatshield during "
+        "the ~11 km/s lunar-return entry — a material/bond failure of the "
+        "shield itself, independent of the g-load corridor. Catastrophic."),
+    "micrometeoroid_hull_penetration": (
+        "Micrometeoroid penetrated the crew cabin",
+        "A natural-flux micrometeoroid punctured the crew-cabin pressure "
+        "hull (orbital debris excluded — that flux is a post-1969 artifact). "
+        "A hull puncture at mission velocities is catastrophic. The rate "
+        "scales with total time in space."),
+    "surface_spe_eva_fatality": (
+        "Solar particle event during the surface stay",
+        "A severe (Aug-1972-class) solar particle event struck while the crew "
+        "was on the lunar surface, where the suit and the thin LM cabin offer "
+        "no storm shelter. The lethal radiation dose is fatal to both "
+        "moonwalkers; the Command Module Pilot, sheltered in the CSM, returns "
+        "alone. The Aug-1972 SPE fell between Apollo 16 and 17 and would have "
+        "been lethal to a surface crew — the marquee 1969 surface hazard."),
+    "recovery_parachute_failure": (
+        "Main-parachute failure at splashdown",
+        "Two or more of the three main parachutes failed to deploy on the "
+        "final descent, so the Command Module struck the water well above the "
+        "survivable impact speed (a single-main-out landing, as on Apollo 15, "
+        "stays survivable and is not counted here). Catastrophic for the crew."),
 }
 
 
@@ -374,10 +490,7 @@ def build_crosscheck_rows(nominal_results, df):
         ("TEI burn time",         "tei_burn_time_s",    "s",   0, None),
         ("Entry FPA",             "fpa_at_entry_deg",   "°",   2, None),
         ("Entry interface speed", "entry_speed_ms",     "m/s", 0, None),
-        ("Peak entry g-load",     "max_g",              "g",   1,
-         "guided entry floors at ~8.6 g for the 2,780 km design range "
-         "(constant-bank PC); matching Apollo's 6.5 g needs a range-aware "
-         "drag reference (HUNTEST) — documented future work"),
+        ("Peak entry g-load",     "max_g",              "g",   1, None),
         ("Mission duration",      "mission_duration_d", "d",   2, None),
     ]:
         if not isinstance(N.get(key), (int, float)):
@@ -492,138 +605,179 @@ def known_limitations(nominal_results, df):
     tlmcc_dv = (float(df["mcc_dv_ms"].median())
                 if "mcc_dv_ms" in df.columns and len(df["mcc_dv_ms"].dropna())
                 else float("nan"))
-    tlmcc_n = (float(df["mcc_n_burns"].median())
-               if "mcc_n_burns" in df.columns and len(df["mcc_n_burns"].dropna())
-               else float("nan"))
+    # Prefer the MSFN-era EXECUTED-translunar-burn column: the legacy
+    # mcc_n_burns key is written by the translunar chain then OVERWRITTEN by
+    # the trans-earth chain on every trial that reaches the return leg (so it
+    # was actually the trans-earth OPPORTUNITY count, waived included).
+    if "tlmcc_n_exec" in df.columns and len(df["tlmcc_n_exec"].dropna()):
+        tlmcc_n = float(df["tlmcc_n_exec"].median())
+    else:
+        tlmcc_n = (float(df["mcc_n_burns"].median())
+                   if "mcc_n_burns" in df.columns
+                   and len(df["mcc_n_burns"].dropna())
+                   else float("nan"))
     temcc_dv = (float(df["mcc_total_dv_ms"].median())
                 if "mcc_total_dv_ms" in df.columns
                 and len(df["mcc_total_dv_ms"].dropna())
                 else float("nan"))
 
     return [
-        ("Saturn V ascent — reliability & guidance are estimates",
+        ("Saturn V ascent — engine-out reliabilities are sourced estimates",
          "The ascent and TLI ARCHITECTURE is no longer a limitation: the "
          "full stack is physically flown (S-IC/S-II/S-IVB, IGM linear-tangent "
-         f"steering to a {park} parking orbit vs Apollo's ~184 × 186 km), and "
-         "TLI ignites from each trial's own launched parking orbit with an "
+         f"steering to a {park} parking orbit vs Apollo's ~184 × 186 km), TLI "
+         "ignites from each trial's own launched parking orbit with an "
          "IGM-style steered cutoff (ENABLE_INTEGRATED_TLI + "
          "ENABLE_LAUNCH_CONTINUITY, both default ON) — the pad-to-splashdown "
-         "trajectory is one continuous flown path. What remains a limitation "
-         "is the INPUTS: the engine-out probabilities driving the "
-         "launch-failure mode are sourced estimates — F-1 ~98.5% per engine "
-         "(conservative; no F-1 ever failed in flight), J-2 ~99%, S-IVB "
-         "ignition ~99.5% (informed by the Apollo 6 failures) — and the "
-         "ascent steering is a stand-in whose solved launch window (72.48°) "
-         "sits ~0.4° from Apollo's as-flown 72.058° (the un-yawed "
-         "Earth-rotation plane bias in the gravity-turn model)."),
-        ("Navigation is open-loop, not ground-tracked",
-         "The deep-space solves (TEI burn vector, midcourse targets) are "
-         "computed once from the nominal trajectory and flown open-loop, "
-         "rather than continuously re-solved from tracking data as Apollo's "
-         "ground network did. Consequences visible in this run: TEI commits "
-         "with larger corridor residuals than ground tracking would allow, so "
-         f"the trans-Earth MCC chain trims ~{temcc_dv:.0f} m/s median vs "
-         "Apollo 11's single 1.5 m/s; and when rev-1 is out of corridor the "
-         "TEI slips to a later opportunity, inflating the rendezvous→TEI leg "
-         "beyond Apollo's 10.9 h. (The solved nominal TEI ΔV ~"
-         f"{tei:.0f} m/s vs Apollo's 1,008 reflects the sim's lunar-orbit "
-         "geometry, not a propellant error.)"),
-        ("Rendezvous burns are lumped, not individually flown",
-         "After LM ascent the rendezvous is modeled as a propellant-budget "
-         "check (the LM-vs-CSM plane angle charged as plane-change ΔV plus a "
-         "sourced ~30 m/s coelliptic budget against APS + ~60 m/s RCS) rather "
-         "than flying the individual Apollo rendezvous burns (CSI / CDH / "
-         "terminal phase); phasing- and altitude-matching dispersions are not "
-         "modeled. (Docking failure itself is sourced — ~0.95%/docking from "
-         "2 capture anomalies in ~21 program dockings — and applied at both "
-         "docking events.)"),
-        ("Surface operations",
-         "The 21.6-hour surface stay now carries three SOURCED failure modes "
-         "(ENABLE_DESCENT_FAILURE_MODES): an unrecoverable LM "
+         "trajectory is one continuous flown path — and the model commands "
+         "Apollo's AS-FLOWN launch azimuth (72.058°). What remains is the "
+         "INPUTS: the engine-out probabilities driving the launch-failure "
+         "mode are sourced estimates — F-1 ~98.5% per engine (conservative; "
+         "no F-1 ever failed in flight), J-2 ~99%, S-IVB ignition ~99.5% "
+         "(informed by the Apollo 6 failures). The residual guidance fidelity "
+         "is small and now lives in the steering PLANE, not the commanded "
+         "azimuth: a stage-isolated +0.08° inclination bias (32.60° vs "
+         "as-flown 32.521°) that the flown vehicle absorbs via the TLI "
+         "preset's yaw tilt, closing the launch window to periselene 103 km / "
+         "out-of-plane +3 km / arrival slip −0.05 h at the real azimuth."),
+        ("Navigation is a scheduled-slot MSFN stand-in, not a continuous filter",
+         "Navigation is no longer open-loop: with ENABLE_MSFN_NAV / "
+         "_KNOWLEDGE / _EXEC_ERROR_FORM (all default ON), every perturbed "
+         "trial RE-SOLVES at each Apollo MCC opportunity on a tracked estimate "
+         "(truth + a Vonbun-1966-class OD residual) and executes on truth with "
+         "the as-flown RCS/SPS execution-error form — translunar slots run a "
+         "3-DOF fixed-epoch closest-approach correction, TEI seeds a "
+         "planned-return FPA/TOF→EI-epoch/latitude solve, and the trans-Earth "
+         "chain targets the full entry point. The Apollo fire/waive pattern "
+         "emerges untuned (~92% of the fleet flies exactly one translunar "
+         f"correction; trans-Earth trims ~{temcc_dv:.0f} m/s median vs "
+         "Apollo's single 1.5). The RESIDUAL is that this is a DISCRETE-slot "
+         "schedule-keeper, not a true continuous filter: its knowledge sigmas "
+         "and ~50 km deadband are pre-mission-analysis estimates, the "
+         "trans-Earth chain runs ~1 burn above Apollo, and ~17% of returns "
+         "still pay a displaced-recovery-zone cost on hypersensitive "
+         "corridor-edge geometries — the honest arrival dispersion Apollo's "
+         "real-time tracking existed to manage. (The nominal TEI ΔV ~"
+         f"{tei:.0f} m/s vs Apollo's 1,008 reflects lunar-orbit geometry, not "
+         "a propellant error.)"),
+        ("Rendezvous ΔV is computed, not flown as integrated burns",
+         "The rendezvous is no longer a fixed budget (ENABLE_FLOWN_RENDEZVOUS, "
+         "default ON): after the LM ascent flattens (pitch → ~88° from "
+         "vertical) and inserts near-horizontal into Apollo's real ~17 × 83 km "
+         "(9 × 45 nmi) ellipse, a Hohmann-class coelliptic (CSI/CDH) raise "
+         "from that dispersed insertion to the CSM orbit is SOLVED and added "
+         "to a sourced TPI/braking allowance + the physical plane change "
+         "(nominal ~41.6 m/s, Apollo-class), gated against the APS + ~60 m/s "
+         "RCS budget so a poor ascent can genuinely bind. The RESIDUAL: this "
+         "is still a computed-ΔV PROXY, not the individual CSI/CDH/terminal "
+         "burns flown as integrated maneuvers with explicit LM↔CSM phasing "
+         "(the fully-flown CFP proved structurally non-convergent in-model and "
+         "is deferred); altitude-matching dispersions are now in the cost but "
+         "per-burn phasing dispersions are not. (Docking failure itself is "
+         "sourced — ~0.95%/docking from 2 capture anomalies in ~21 program "
+         "dockings — applied at both docking events.)"),
+        ("Surface operations — coefficients are estimate-grade",
+         "The 21.6-hour surface stay carries three SOURCED discrete failure "
+         "modes (ENABLE_DESCENT_FAILURE_MODES): an unrecoverable LM "
          "electrical/switchgear fault (~0.85%/mission, anchored to Apollo "
-         "11's own snapped ascent-engine arming circuit breaker — closed with "
-         "a felt-tip pen — as 1 serious event in 6 landings × ~5% "
-         "unrecoverable), a touchdown tip-over beyond the ~12° stability "
-         "limit (~0.5%/landing; Apollo 15 landed at ~11°), and a terminal "
-         "EVA suit/PLSS failure (~0.1%/mission, from 0 failures in 28 program "
-         "man-EVAs with the OPS backup never used). All three are LM-crew "
-         "exposure. Still not modeled: thermal/power dispersions during the "
-         "stay, cumulative dust degradation, and per-astronaut EVA workload "
-         "differences."),
-        ("Service-module systems failure (the Apollo 13 mode)",
-         "A catastrophic CSM service-module systems failure (cryo-tank / fuel "
-         "cell, the Apollo 13 class) is drawn per mission at "
-         "PROB_SM_CATASTROPHIC = 1/15 — the SOURCED rate of 1 such event in "
-         "15 crewed CSM flights — and strikes at a uniformly-drawn fraction "
-         "of the mission timeline (cryo/fuel-cell duty is roughly "
-         "continuous). It is the single largest failure family in the run. "
-         "The CONSEQUENCE depends on where it lands: translunar or lunar-orbit "
-         "events (LM still attached) fall to the demonstrated LM-lifeboat "
-         "abort (Apollo 13 survived exactly this, ~85–90% modeled); a "
-         "surface-phase event forces an emergency liftoff to a failing CSM "
-         "(~40%); a trans-Earth event is post-LM-jettison with no lifeboat "
-         "(~10%, CM batteries last hours not days). The three RECOVERABLE "
-         "Apollo SM anomalies (Apollo 15 SPS switch, Apollo 16 TVC, Skylab 3 "
-         "RCS quad leaks) are not separately modeled — only the catastrophic "
-         "class. Per-mission timing within a phase is uniform, not "
-         "duty-cycle-weighted."),
-        ("Midcourse corrections use a simplified basis",
-         "The outbound MCC chain (Apollo 11's MCC-1..4 schedule, B-plane "
-         "targeted) corrects only in an along-track + cross-track basis — the "
-         "less-efficient radial component is omitted — and both the ~10 km "
-         "B-plane deadband and the ~0.15 m/s per-burn execution residual are "
-         "estimates, not sourced dispersions. (The chain itself, with its "
-         "closed-loop MCC-4b perilune trim, is faithful; these are the "
-         "remaining modeling approximations.)"),
-        ("Moon model & lunar gravity",
+         "11's snapped ascent-engine arming breaker), a touchdown tip-over "
+         "beyond the ~12° stability limit (~0.5%/landing; Apollo 15 landed at "
+         "~11°), and a terminal EVA suit/PLSS failure (~0.1%/mission, from 0 "
+         "in 28 program man-EVAs). On top of these, ENABLE_SURFACE_OPS "
+         "(default ON) now flies a per-suit metabolic PLSS consumables ledger "
+         "over the 2h31m EVA in which FEEDWATER is the thermal margin "
+         "(MSC-00171 §10.0): distinct CDR/LMP workloads with per-suit "
+         "metabolic + EVA-duration dispersion, an external lunar thermal load "
+         "and a cumulative dust-cooling term, reproducing Apollo 11's flown "
+         "margins at the nominal — so a high-metabolic / extended-EVA tail can "
+         "breach the 30-min red line into a survivable EVA abort, and if the "
+         "OPS backup also fails, a per-suit (or both-suits) fatality. "
+         "RESIDUAL: the dust/thermal/OPS coefficients are estimate-grade "
+         "(≈ non-binding at Apollo 11's single short EVA — dust minimal, "
+         "cooling always adequate), the EVA is a lumped metabolic drawdown "
+         "not a per-task timeline, and the surface clock is held at "
+         "21.6 h (a small true-stay refinement is not applied — the "
+         "open-loop return is hypersensitive to upstream timing)."),
+        ("Service-module systems failure (the Apollo 13 mode) — sourcing estimates",
+         "A catastrophic CSM systems failure (cryo-tank / fuel-cell, the "
+         "Apollo 13 class) is drawn per mission at PROB_SM_CATASTROPHIC = 1/15 "
+         "— the SOURCED rate of 1 such event in 15 crewed CSM flights — "
+         "striking at a uniformly-drawn fraction of the timeline. It is the "
+         "single largest crew-risk family in the run (~6%). The CONSEQUENCE "
+         "depends on where it lands, across four phases with LM-attached "
+         "phases getting the lifeboat: translunar p_survive ~0.90 and "
+         "lunar-orbit ~0.85 (LM still attached — the demonstrated Apollo 13 "
+         "abort), surface ~0.40 (emergency liftoff to a failing CSM), "
+         "trans-Earth ~0.10 (post-LM-jettison, no lifeboat — CM batteries last "
+         "hours, not days). Still ESTIMATED: these "
+         "per-phase survival values and the catastrophic-vs-recoverable split "
+         "are unanchored judgment, the strike timing is uniform (not "
+         "duty-cycle-weighted), and the three RECOVERABLE Apollo SM anomalies "
+         "(Apollo 15 SPS switch, 16 TVC, Skylab 3 RCS quad leaks) are not "
+         "separately modeled — only the catastrophic class."),
+        ("Midcourse basis is now full 3-DOF; the deadband + residual are estimates",
+         "The outbound MCC now uses the full 3-DOF MSFN/RTCC corrector "
+         "(ENABLE_MSFN_NAV, default ON): each translunar slot solves the "
+         "ENTIRE velocity vector — INCLUDING the radial axis the old "
+         "along-track + cross-track basis omitted — to drive the fixed-epoch "
+         "close-approach point (B-plane AND arrival epoch jointly) onto the "
+         "plan, on a Vonbun-1966-class tracking estimate, executed on truth "
+         "with the as-flown RCS/SPS-branched residual (0.03 / 0.076 m/s per "
+         "axis, MSC-00171 Table 8.6-II). The remaining approximations are the "
+         "estimated ~50 km close-approach deadband (~±21 s timeline drift), "
+         "the ~10 m/s MCC-1 defer-to-better-tracking threshold, and the honest "
+         "abstraction that a burn's outcome is seen only at the next tracking "
+         "slot, not continuously. (The legacy 2-DOF B-plane solve survives "
+         "only for the nominal reference and when MSFN is off.)"),
+        ("Moon model & lunar gravity — mascons are a proxy",
          "The default configuration (ENABLE_REAL_EPHEMERIS=True) uses a real "
          "July-1969 lunar ephemeris — a truncated Meeus series validated to "
          "<1 arcsec against the published worked example — with Earth rotation "
          "anchored to the real launch-epoch GMST, so the return plane and "
-         "splashdown reflect the true sky. Lunar gravity is the real GRAIL "
-         "GRGM1200A field truncated to degree 8 (ENABLE_LUNAR_SH_FIELD), so "
-         "the parking orbit evolves physically (~5–20 km/day, the documented "
-         "Apollo behavior). Honest residuals: the Moon-fixed frame is a "
-         "synchronous-lock approximation (pole ~6.7° from the true spin axis; "
-         "~7° optical librations ignored) — fine for the zonal-driven orbit "
-         "evolution modeled, not for localized mascon dynamics, which live at "
-         "degree ≥50 and are therefore still represented by a calibrated "
-         "landing-dispersion proxy rather than integrated gravity. Setting "
+         "splashdown reflect the true sky. The Moon-fixed frame now uses the "
+         "IAU-2009 lunar orientation (ENABLE_LUNAR_LIBRATION=True): the true "
+         "spin-pole + prime-meridian W with the physical-libration terms, "
+         "REPLACING the earlier synchronous-lock approximation — which is why "
+         "the reported landing point is now true selenographic. Lunar gravity "
+         "is the real GRAIL GRGM1200A field truncated to degree 8 "
+         "(ENABLE_LUNAR_SH_FIELD), so the parking orbit evolves physically "
+         "(~5–20 km/day, the documented Apollo behavior). Honest residual: "
+         "localized maria mascons live at degree ≥50 and are NOT captured by "
+         "the degree-8 field, so they remain a calibrated landing-dispersion "
+         "proxy (MASCON_DOWNRANGE_*) rather than integrated gravity. Setting "
          "the flags False reproduces the legacy idealized model (circular "
-         "Moon at 384,400 km, fixed 28.4° inclination, degree-2 gravity)."),
-        ("Entry & splashdown",
+         "Moon, degree-2 closed form, tidal-lock frame)."),
+        ("Entry & splashdown — EI delivery bias + static atmosphere",
          "Entry flies CLOSED-LOOP guidance by default "
-         "(ENABLE_SKIP_ENTRY_GUIDANCE=True): a g-aware numerical "
+         "(ENABLE_SKIP_ENTRY_GUIDANCE): a g-aware numerical "
          "predictor-corrector picks the bank angle from full trajectory "
-         "predictions (miss scored with a penalty above 7 g, hard guard at "
-         "9.5 g — under Apollo's 10 g guidance limit and the 12 g structural "
-         "bound), with crossrange managed by deadband bank reversals. The "
-         f"nominal lands ~{absmiss:.0f} km from its recovery zone at peak "
-         f"~{pg:.1f} g; the Monte Carlo guidance miss is ~{disp:.0f} km "
-         "median. RECOVERY TARGETING follows RTCC practice: Apollo "
-         "pre-planned a recovery zone for EVERY TEI opportunity, so each "
-         "trial's zone is placed at the calibrated ~2,784 km short-corridor "
-         "range along the TRIAL'S OWN entry ground track — a rev-slipped "
-         "return (trans-Earth timing shifts the entry interface by up to "
-         "~110° of longitude) aims at its own zone exactly as the recovery "
-         "force would have repositioned. splash_miss_km is therefore true "
-         f"guidance accuracy vs the zone aimed for (median ~{disp:.1f} km, "
-         f"fleet max ~{disp_max:.0f} km from a rare shallow-tail overfly; "
-         "Apollo 11 splashed ~3 km from its aim point), while "
-         "recovery_zone_displacement_km records the operational cost of a "
-         "slip (~0–200 km on-time, thousands of km for slipped revs). "
-         f"Honest residuals: nominal peak g ~{pg:.1f} vs Apollo 11's "
-         "as-flown 6.5 g — the short dispersion-robust profile trades g for "
-         "accuracy; closing it needs an FPA-indexed family of HUNTEST-style "
-         "reference profiles with closed-loop drag tracking (a 6-variant "
-         "corpus — online predictor-corrector and an offline open-loop "
-         "profile — left it documented future work). Shallow entry-FPA tails "
-         "(~+2σ of delivery) can overfly yet survive. The recovery REGION is "
-         "the western Pacific near (13.5°N, 146°E) — latitude matching "
-         "Apollo 11's 13.3°N to ~0.2°, with the ~13° longitude offset from "
-         "Apollo's 169°W a residual of the mission timeline (~8.18 d vs "
-         "8.16 d) and the sim's TLI/TEI plane geometry, not a guidance "
-         "error."),
+         "predictions (penalty above 7 g, hard guard at 9.5 g — under Apollo's "
+         "10 g guidance limit and the 12 g structural bound), with crossrange "
+         "via deadband bank reversals. The old 8.6-vs-6.5 g residual is "
+         "RESOLVED: ENABLE_APOLLO_ENTRY_GUIDANCE "
+         "(default ON) adds Apollo constant-drag energy management "
+         "(TN D-6725) — the first dip flies lift-up so the peak equals the "
+         "physical entry-FPA floor, then a constant-drag plateau bleeds energy "
+         "without skipping to fly the short ~2,784 km range at that floor "
+         f"peak, taking peak g from the old ~8.44-g median to a ~{pg:.1f}-g "
+         "nominal (fleet median ~6.6 g), matching Apollo's ~6.5 g; the "
+         "6-variant HUNTEST corpus that could not close "
+         f"it stays OFF. The nominal lands ~{absmiss:.0f} km from its recovery "
+         f"zone; the MC guidance miss is ~{disp:.1f} km median (fleet max "
+         f"~{disp_max:.0f} km from a rare +2σ shallow-tail overfly; Apollo 11 "
+         "splashed ~3 km from its aim point), with recovery on "
+         "per-opportunity zones along each trial's own entry ground track. "
+         "Splashdown is now FLOWN, not geometric (ENABLE_APOLLO_ELS, default "
+         "ON): a two-phase parachute descent (2 drogues → ~56 m/s, 3 mains → "
+         "~9.8 m/s), wind drift, CM flotation (Apollo 11 was stable-2), and an "
+         "Apollo-faithful parachute-failure mode. Documented residuals: the "
+         "~0.02° EI DELIVERY bias (nominal EI ~−6.50° vs Apollo's −6.48°, a "
+         "TEI-delivery item — the guidance law itself is "
+         "faithful), a static (no-wind, no per-trial density dispersion) "
+         "exponential atmosphere, and estimate-grade parachute/flotation "
+         "rates. The recovery REGION is the western Pacific near (13.5°N, "
+         "146°E) — latitude matching Apollo 11's 13.3°N to ~0.2°, the ~13° "
+         "longitude offset a residual of the timeline + TLI/TEI geometry."),
     ]
 
 
@@ -1208,8 +1362,10 @@ def generate_dashboard(df, nominal_results, outdir):
             nominal_table += (f"<tr><td>{desc}</td><td>{v:.2f}</td>"
                                 f"<td>{ap:.2f}</td><td>{err:+.1f}%</td></tr>\n")
         else:
-            nominal_table += (f"<tr><td>{desc}</td><td>{v}</td>"
-                                f"<td>{ap}</td><td>—</td></tr>\n")
+            _vs = f"{v:.1f}" if isinstance(v, (int, float)) else str(v)
+            _aps = f"{ap:.1f}" if isinstance(ap, (int, float)) else str(ap)
+            nominal_table += (f"<tr><td>{desc}</td><td>{_vs}</td>"
+                                f"<td>{_aps}</td><td>—</td></tr>\n")
 
     # Build failure analysis HTML
     failure_table = ""
@@ -1312,42 +1468,7 @@ timeline. Per-trial phase timing is saved under <code>trials/</code>.</p>
 <html><head><meta charset="utf-8">
 <title>Apollo 11 Physics Simulation — Results</title>
 <style>
-body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
-                     sans-serif; margin: 0; padding: 24px;
-                     background: #f5f5f7; color: #1d1d1f; }}
-h1 {{ font-weight: 600; margin-bottom: 4px; font-size: 28px; }}
-h2 {{ font-weight: 500; margin-top: 32px; border-bottom: 2px solid #d2d2d7;
-       padding-bottom: 8px; font-size: 20px; }}
-.summary-card {{ background: white; padding: 18px 24px; border-radius: 12px;
-                  box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin: 16px 0; }}
-.stats {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
-           margin: 16px 0; }}
-.stat {{ background: white; padding: 14px; border-radius: 10px;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
-.stat .label {{ color: #6e6e73; font-size: 12px; text-transform: uppercase;
-                  letter-spacing: 0.5px; }}
-.stat .value {{ font-size: 26px; font-weight: 600; margin-top: 4px; }}
-table {{ border-collapse: collapse; width: 100%; background: white;
-          border-radius: 10px; overflow: hidden;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
-th, td {{ padding: 9px 14px; text-align: left;
-            border-bottom: 1px solid #e8e8ed; vertical-align: top; }}
-th {{ background: #f9f9fb; font-weight: 600; color: #6e6e73; font-size: 12px;
-       text-transform: uppercase; letter-spacing: 0.4px; }}
-tr:last-child td {{ border-bottom: none; }}
-tr.ph-header td {{ background: #f0f0f4; color: #1d1d1f; font-size: 12px;
-                    letter-spacing: 0.5px; }}
-.plot {{ background: white; padding: 16px; border-radius: 10px; margin: 12px 0;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }}
-.plot img {{ max-width: 100%; height: auto; }}
-.caveat {{ background: #fffbeb; border-left: 4px solid #f59e0b;
-            padding: 14px 18px; border-radius: 6px; margin: 14px 0;
-            font-size: 14px; line-height: 1.6; }}
-.context {{ background: #eff6ff; border-left: 4px solid #3b82f6;
-            padding: 14px 18px; border-radius: 6px; margin: 14px 0;
-            font-size: 14px; line-height: 1.6; }}
-code {{ background: #f3f4f6; padding: 2px 5px; border-radius: 3px;
-          font-size: 13px; }}
+{_DASH_STYLE}
 </style></head>
 <body>
 <h1>Apollo 11 Physics-Integrated Monte Carlo</h1>
@@ -1426,13 +1547,6 @@ mission, so such a trial clears every phase.)</div>
 </table>
 
 {phase_timing_section}
-
-<h2>Detail plots</h2>
-<div class="plot">{embed_image("descent_profile.png")}</div>
-<div class="plot">{embed_image("trajectory_3d.png")}</div>
-<div class="plot">{embed_image("fuel_margin.png")}</div>
-<div class="plot">{embed_image("entry_fpa.png")}</div>
-<div class="plot">{embed_image("splash_miss.png")}<div style="font-size:12px;color:#6e6e73;margin-top:4px">Guidance accuracy: distance from each trial's aimed per-opportunity recovery zone (median ~{disp:.1f} km; the rare tail is shallow-FPA overfly, not a targeting error).</div></div>
 
 <h2>Apollo 11 Cross-Check</h2>
 <div class="context">

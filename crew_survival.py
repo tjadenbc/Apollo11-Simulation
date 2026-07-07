@@ -49,7 +49,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-OUTDIR = "outputs/apollo11_final10000"
+OUTDIR = "outputs/final"
 CREW_SIZE = 3   # Armstrong, Aldrin, Collins
 
 # Roster and crew roles. Survival diverges by VEHICLE during the lunar phase:
@@ -320,6 +320,49 @@ SURVIVAL_MODEL = {
             "crew is stranded on the surface; Collins returns alone."
         ),
     },
+    "recovery_parachute_failure": {
+        "p_survive": 0.0,
+        "outcome": "cm_impact_no_chutes",
+        "explanation": (
+            "Stage-13 parachute failure: 2 or more of the 3 main chutes lost, "
+            "so the CM cannot arrest its descent. Apollo was land-safe on 2 of "
+            "3 mains (Apollo 15 landed safely on two after an RCS-dump burn "
+            "collapsed one); losing a SECOND main is non-survivable. Rare "
+            "(~1e-4-class; no CM was ever lost to parachutes in the program). "
+            "Whole-CM fate at water impact — routes to 'all' at p_survive 0.0."
+        ),
+    },
+    "surface_both_suits_lost": {
+        "p_survive": 0.0,
+        "outcome": "both_moonwalkers_lost_collins_solo",
+        "explanation": (
+            "Both PLSS suits suffered a terminal anomaly during the surface "
+            "EVA (per-suit model: two independent per-suit draws, "
+            "P(both)~q^2 ~1e-6-class, or both breaching the consumables red "
+            "line with the OPS backup failing). Both moonwalkers are lost on "
+            "the surface, the ascent stage never lifts off, and Collins "
+            "returns alone. The 'In Event of Moon Disaster' contingency. "
+            "Routes via the surface_ prefix to lm_crew at p_survive 0.0 — "
+            "both LM crew lost, Collins solo at csm_solo_rate."
+        ),
+    },
+    "surface_spe_eva_fatality": {
+        "p_survive": 0.0,
+        "outcome": "spe_both_moonwalkers_lost_collins_solo",
+        "explanation": (
+            "A severe (Aug-1972-class) solar particle event struck during the "
+            "unsheltered lunar surface stay. On the surface the crew has only "
+            "suit shielding (minimal) and the LM cabin (not a storm shelter — "
+            "the 1969 contingency was a multi-hour CSM abort), so a severe "
+            "event delivers a lethal BFO dose to BOTH moonwalkers. Collins is "
+            "CM-sheltered (~90% attenuation) and returns solo. This is the "
+            "marquee 1969 surface hazard: the Aug-1972 SPE fell between Apollo "
+            "16 and 17 and would have been lethal to a surface crew. Routes via "
+            "the surface_ prefix to lm_crew at p_survive 0.0 — both LM crew "
+            "lost, Collins solo at csm_solo_rate. (Landing-mission only; the "
+            "no-landing profile has no surface stay.)"
+        ),
+    },
     "sm_failure_translunar": {
         "p_survive": 0.90,
         "outcome": "lm_lifeboat_abort",
@@ -426,6 +469,81 @@ SURVIVAL_MODEL = {
             "lunar orbit with no return path."
         ),
     },
+    # --- No-landing-profile / missing-1969-hazard modes (default-OFF flags). ---
+    "sps_ignition_failure_loi": {
+        "p_survive": 0.97,
+        "outcome": "free_return_survival",
+        "explanation": (
+            "The single, non-redundant SPS failed to ignite for Lunar Orbit "
+            "Insertion. Apollo 11 flew a PURE FREE-RETURN approach by design: "
+            "with no LOI burn the spacecraft swings around the Moon and "
+            "returns to a survivable Earth entry WITHOUT any propulsion — the "
+            "exact recovery path Apollo 13 rode home. Free-return-class "
+            "(~0.97); a hair below the missed-SOI 0.98 because an SPS out "
+            "also questions the trans-Earth mid-course capability (mitigated "
+            "by the SM RCS and, on a real stack, the LM DPS, per Apollo 13)."
+        ),
+    },
+    "sps_ignition_failure_tei": {
+        "p_survive": 0.0,
+        "outcome": "stranded_in_lunar_orbit",
+        "explanation": (
+            "The single, non-redundant SPS failed to ignite for Trans-Earth "
+            "Injection. Unlike the LOI no-start, there is no free-return "
+            "geometry to fall back on once captured in lunar orbit — the crew "
+            "is stranded until consumables are exhausted. LOC. (In the "
+            "no-landing profile the LM has been jettisoned before TEI, so "
+            "there is no DPS lifeboat as on Apollo 13.)"
+        ),
+    },
+    "nav_platform_unrecoverable": {
+        "p_survive": 0.85,
+        "outcome": "manual_backup_and_ground_nav",
+        "explanation": (
+            "An unrecoverable loss of the primary guidance platform "
+            "(IMU/optics) — the recoverable-degradation branch is a "
+            "crew-realigned non-event. On a CREWED vehicle this is largely "
+            "survivable: the crew flies attitude and burns on the backup "
+            "attitude reference and the ground computes the return solutions "
+            "over MSFN (the same manual-return capability Apollo carried). "
+            "Mission fails; ~0.85 crew survival reflects the residual risk of "
+            "a degraded entry corridor. (An UNCREWED vehicle has no such "
+            "backup — the key native Apollo-vs-Artemis distinction.)"
+        ),
+    },
+    "cm_sm_separation_failure": {
+        "p_survive": 0.0,
+        "outcome": "sm_attached_cannot_trim",
+        "explanation": (
+            "The CM/SM pyrotechnic separation failed, leaving the Service "
+            "Module attached at entry. The blunt-body CM cannot hold its "
+            "heatshield-forward trim with the SM mass attached, so it cannot "
+            "fly the entry corridor. Catastrophic. Rare (~1e-4-class pyro "
+            "reliability); no Apollo CM ever failed to separate."
+        ),
+    },
+    "entry_heatshield_failure": {
+        "p_survive": 0.0,
+        "outcome": "heatshield_breach",
+        "explanation": (
+            "An ablative-heatshield char-through or delamination at the "
+            "~11 km/s lunar-return entry. This is independent of the g-load "
+            "corridor the guided entry already models — a material/bond "
+            "failure of the shield itself. Catastrophic; no Apollo heatshield "
+            "ever breached."
+        ),
+    },
+    "micrometeoroid_hull_penetration": {
+        "p_survive": 0.0,
+        "outcome": "cm_hull_puncture",
+        "explanation": (
+            "A natural-flux micrometeoroid penetrated the crew-cabin "
+            "pressure hull (orbital debris is EXCLUDED — that flux is a "
+            "post-1969 artifact). A crew-hull puncture at mission velocities "
+            "is catastrophic. Whole-mission exposure; the rate is scaled by "
+            "time-in-space when exposure-scaling is enabled."
+        ),
+    },
 }
 
 
@@ -521,6 +639,10 @@ def apply_survival_model(df, seed=42):
                 # alarm) is a degraded-touchdown abort: the ascent stage can
                 # stage off, same class as the propellant-exhaustion abort.
                 _fk = "descent_descent_propellant_exhausted"
+            elif _fk.startswith("transearth_"):
+                # Any trans-earth no-return-class loss (e.g. no entry found
+                # after the MCC chain) is the whole-CM return-leg loss.
+                _fk = "transearth_no_entry"
         model = SURVIVAL_MODEL.get(_fk, None)
         if model is None:
             # Unmodeled failure: surface the gap loudly rather than silently
@@ -841,7 +963,18 @@ def main():
     # True for trials that abort before descent ever runs.
     _landed = (df['land_lat_deg'].notna() if 'land_lat_deg' in df.columns
                else df['full_success'].fillna(False).astype(bool))
-    df['mission_success'] = (_landed & df['crew_survived'].fillna(False).astype(bool))
+    # No-landing profile: there is no lunar-landing
+    # objective, so "success" is the crew returning alive (splashdown) — the
+    # native crew-survival metric for the Apollo-vs-Artemis no-landing
+    # comparison. These trials never record land_lat_deg, so without this they
+    # would all mis-score as failures. (Absent column → all-False → the
+    # production landing metric is bit-identical.)
+    _nl = (df['no_landing_profile'].fillna(False).astype(bool)
+           if 'no_landing_profile' in df.columns
+           else pd.Series(False, index=df.index))
+    _objective_reached = _landed | _nl
+    df['mission_success'] = (_objective_reached
+                             & df['crew_survived'].fillna(False).astype(bool))
 
     # Save augmented CSV
     out_csv = os.path.join(OUTDIR, "results_with_survival.csv")

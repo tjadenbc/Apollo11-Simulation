@@ -22,6 +22,7 @@ Usage (normally via submit_mc.sh, but callable by hand):
   python3 cluster_run.py setup  <outdir> <n> <seed>
   python3 cluster_run.py shard  <outdir> <n> <seed> <shard_id> <n_shards> <workers>
   python3 cluster_run.py merge  <outdir> <n_shards>
+  python3 cluster_run.py preflight <outdir>
 """
 import os
 import shutil
@@ -36,8 +37,11 @@ def do_setup(outdir, n, seed):
     import apollo11
     apollo11.main_parallel(n=n, outdir=outdir, seed=seed, workers=1,
                            indices=[])
-    for f in ("ei_target.json", "bplane_target.json",
-              "nominal_results.json"):
+    # od_cov.json = the pinned STM-LinCov covariance (ENABLE_OD_FILTER). It is
+    # built/loaded by main_parallel above; shards MUST inherit it (see do_shard)
+    # or the OD filter silently falls back to the legacy diagonal per shard.
+    for f in ("ei_target.json", "bplane_target.json", "ca_target.json",
+              "nominal_results.json", "od_cov.json"):
         p = os.path.join(outdir, f)
         if not os.path.exists(p):
             print(f"WARNING: setup did not produce {f}")
@@ -49,7 +53,11 @@ def do_shard(outdir, n, seed, shard_id, n_shards, workers):
     os.makedirs(sd, exist_ok=True)
     # Seed the shard dir with the master's nominal artifacts so
     # main_parallel skips the nominal and loads the SAME targets everywhere.
-    for f in ("ei_target.json", "bplane_target.json", "nominal_results.json"):
+    # od_cov.json REQUIRED for the OD filter: shards skip the nominal (targets
+    # pinned) so they never recapture the covariance epochs — without the pinned
+    # od_cov.json every shard would silently fall back to the legacy diagonal.
+    for f in ("ei_target.json", "bplane_target.json", "ca_target.json",
+              "nominal_results.json", "od_cov.json"):
         src = os.path.join(outdir, f)
         dst = os.path.join(sd, f)
         if os.path.exists(src) and not os.path.exists(dst):
@@ -99,6 +107,36 @@ def do_merge(outdir, n_shards):
           f"{int(ok.fillna(False).astype(bool).sum())}/{n}")
 
 
+def _required_skip_files():
+    """The files that must be pinned in an outdir for setup to REUSE the nominal
+    instead of re-deriving it — computed from the ENABLED flags so it stays honest
+    as the config changes. nominal_results.json + the flag-gated targets are what
+    main_parallel checks to skip the nominal; od_cov.json is added when the OD filter
+    is on (its absence wouldn't re-derive, but would silently disable the filter on a
+    production run — the same class of silent contamination)."""
+    import apollo11
+    req = ["nominal_results.json"]
+    if getattr(apollo11, "ENABLE_TEI_TARGETING", False): req.append("ei_target.json")
+    if getattr(apollo11, "ENABLE_BPLANE_TLMCC", False):  req.append("bplane_target.json")
+    if getattr(apollo11, "ENABLE_MSFN_NAV", False):      req.append("ca_target.json")
+    if getattr(apollo11, "ENABLE_OD_FILTER", False):     req.append("od_cov.json")
+    return req
+
+
+def do_preflight(outdir):
+    """Exit 0 if every file needed to SKIP setup (reuse the pinned nominal) is present
+    in outdir; else print what's missing and exit 1. submit_mc.sh calls this for any
+    run > 25 trials so a production run cannot silently re-derive the nominal on the
+    cluster (the cross-machine TEI-branch-flip risk)."""
+    req = _required_skip_files()
+    missing = [f for f in req if not os.path.exists(os.path.join(outdir, f))]
+    if missing:
+        print("PREFLIGHT_MISSING " + " ".join(missing))
+        sys.exit(1)
+    print("PREFLIGHT_OK (pinned nominal present: " + " ".join(req) + ")")
+    sys.exit(0)
+
+
 if __name__ == "__main__":
     mode = sys.argv[1]
     if mode == "setup":
@@ -108,5 +146,7 @@ if __name__ == "__main__":
                  int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7]))
     elif mode == "merge":
         do_merge(sys.argv[2], int(sys.argv[3]))
+    elif mode == "preflight":
+        do_preflight(sys.argv[2])
     else:
-        raise SystemExit(f"unknown mode {mode!r} (setup|shard|merge)")
+        raise SystemExit(f"unknown mode {mode!r} (setup|shard|merge|preflight)")

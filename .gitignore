@@ -8,25 +8,52 @@ venv/
 
 # --- Monte Carlo output ---
 # Exclude every run directory and stray artifact under outputs/ EXCEPT the
-# single definitive run that the paper cites. New dev runs are ignored by
+# single definitive run this release documents. New dev runs are ignored by
 # default; add another `!outputs/<name>/` line to publish one.
 outputs/*
-!outputs/apollo11_final10000/
+!outputs/final/
 
-# Per-trial debug JSONs are bulky and regenerable; the per-trial *results*
-# (results.csv / results_with_survival.csv) are kept. Drop this line to publish
-# the debug JSONs too.
-outputs/apollo11_final10000/trials/
+# Within the published run keep the summary products (CSVs, nominal trajectory,
+# targeting JSONs, dashboard, realism audit, figures) but exclude the bulky and
+# derived artifacts: the per-trial debug JSONs (distributed as the release-asset
+# tarball instead), the tarball itself, the review PDFs, the claude.ai artifact
+# fragments, and the Artemis-hosted comparison copies.
+outputs/final/trials/
+outputs/final/apollo11_final_trials.tar.gz
+outputs/final/*.pdf
+outputs/final/*_artifact.html
+outputs/final/*comparison*
 
 # --- Generated documents ---
-# The review PDF / Word doc are build artifacts of `make_pdf.py` / `make_docx.py`
-# from paper.md; regenerate rather than track them. paper_render.html is a
-# transient intermediate.
+# Build artifacts of the manuscript; regenerate rather than track them.
 TJADEN_2026_06_15.pdf
 TJADEN_2026_06_15.docx
 paper_render.html
 
 # --- Submission staging ---
-# Local working folder for assembling the JBIS submission (manuscript copies,
-# cover letter, forms, correspondence); never tracked.
+# Local working folder for assembling the JBIS submission; never tracked.
 JBIS2026/
+
+# --- Local dev assets (kept on disk, NOT part of the public release) ---
+# Development tooling, diagnostics, the manuscript, and the internal project
+# guide live here locally but are intentionally excluded from the release.
+CLAUDE.md
+paper.md
+make_pdf.py
+make_docx.py
+test_*.py
+diag_*.py
+apollo_no_landing.py
+apollo11_asflown.py
+analyze_nolanding.py
+ascent_fallback_screen.py
+examine_ascent_fallback.py
+diff_definitive_vs_lesshazards.py
+vehicle_only.py
+html_to_pdf.py
+build_comparison.py
+deploy_definitive_10k.sh
+dashboard_style.css
+audit_style.css
+apollo11_realism_audit.md
+apollo_no_landing_design.md
