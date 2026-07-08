@@ -374,6 +374,16 @@ def categorize_failure(reason):
         return ("translunar", s)
     if s == "sm_failure_lunar_orbit" or s == "sm_failure_surface":
         return ("lunar_orbit", s)
+    if s == "sps_ignition_failure_loi":
+        return ("lunar_orbit", s)
+    if s == "sps_ignition_failure_tei":
+        return ("tei", s)
+    if s == "micrometeoroid_hull_penetration":
+        return ("transearth", s)
+    if s == "nav_platform_unrecoverable":
+        return ("translunar", s)
+    if s == "cm_sm_separation_failure" or s == "recovery_parachute_failure":
+        return ("entry", s)
     if s.startswith("descent_"):
         return ("descent", s)
     if s.startswith("surface_"):
@@ -649,13 +659,14 @@ def known_limitations(nominal_results, df):
          "3-DOF fixed-epoch closest-approach correction, TEI seeds a "
          "planned-return FPA/TOF→EI-epoch/latitude solve, and the trans-Earth "
          "chain targets the full entry point. The Apollo fire/waive pattern "
-         "emerges untuned (~92% of the fleet flies exactly one translunar "
+         "emerges untuned (~84% of the fleet flies exactly one translunar "
          f"correction; trans-Earth trims ~{temcc_dv:.0f} m/s median vs "
          "Apollo's single 1.5). The RESIDUAL is that this is a DISCRETE-slot "
          "schedule-keeper, not a true continuous filter: its knowledge sigmas "
          "and ~50 km deadband are pre-mission-analysis estimates, the "
-         "trans-Earth chain runs ~1 burn above Apollo, and ~17% of returns "
-         "still pay a displaced-recovery-zone cost on hypersensitive "
+         "trans-Earth chain runs ~1 burn above Apollo, and ~13% of returns "
+         "pay a displaced-recovery-zone cost of more than 100 km on "
+         "hypersensitive "
          "corridor-edge geometries — the honest arrival dispersion Apollo's "
          "real-time tracking existed to manage. (The nominal TEI ΔV ~"
          f"{tei:.0f} m/s vs Apollo's 1,008 reflects lunar-orbit geometry, not "
@@ -959,13 +970,16 @@ def generate_plots(df, nominal_traj, nominal_results, outdir):
                                     "launch_s_ivb_first")),
         ("Parking\norbit + TLI",   ("launch_parking", "tli_", "transposition_docking")),
         ("Translunar\ncoast",      ("sm_failure_translunar", "missed_lunar_soi")),
-        ("Lunar orbit\n(LOI→PDI)", ("sm_failure_lunar_orbit",)),
+        ("Lunar orbit\n(LOI→PDI)", ("sm_failure_lunar_orbit",
+                                    "sps_ignition_failure_loi")),
         ("Powered\ndescent",       ("descent_",)),
         ("Surface\nstay",          ("surface_", "sm_failure_surface")),
         ("Ascent\n→ orbit",        ("ascent_",)),
         ("Rendezvous\n→ TEI",      ("rendezvous_", "tei_")),
-        ("Trans-earth\ncoast",     ("sm_failure_transearth", "transearth_")),
-        ("Entry →\nsplashdown",    ("entry_",)),
+        ("Trans-earth\ncoast",     ("sm_failure_transearth", "transearth_",
+                                    "sps_ignition_failure_tei",
+                                    "micrometeoroid")),
+        ("Entry →\nsplashdown",    ("entry_", "cm_sm_", "recovery_")),
     ]
     def _fail_phase_idx(reason):
         if reason is None or (isinstance(reason, float) and pd.isna(reason)):

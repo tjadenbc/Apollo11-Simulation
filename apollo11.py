@@ -1568,6 +1568,111 @@ ENABLE_IGM_ASCENT = True
 # shift). Default OFF = bit-identical to the pre-fix lineage (single seed, ier==1).
 ENABLE_IGM_ROBUST_ACCEPT = _nl_envflag("APOLLO_IGM_ROBUST")
 
+# Cross-architecture nominal-branch robustness. The nominal's
+# APOLLO return-timing TEI solve (3-DOF least-squares -> 59.6 h / ~1,008 m/s) is
+# ill-conditioned and multi-rooted; from the min-energy graze seed its trust
+# region can collapse early under some FP/BLAS environments (EPYC x86 vs Apple
+# ARM, even with identical scipy/numpy), silently keeping the FRAGILE 63.6 h /
+# 945 m/s branch (fleet EI-FPA sigma 0.73 vs 0.09 deg, ~9 % entry-g failures).
+# When True, a min-dv multi-seed fallback re-solves from magnitudes around
+# Apollo's sourced TEI to recover the robust branch NATIVELY (no pinned nominal).
+# It engages ONLY when the primary solve fails its accept gate, so machines that
+# already converge (the pinned laptop nominal) are bit-identical. Disable with
+# APOLLO_DISABLE_ROBUST_TEI_SEED=1 to reproduce the pre-fix single-shot behavior.
+ENABLE_ROBUST_TEI_SEED = not _nl_envflag("APOLLO_DISABLE_ROBUST_TEI_SEED")
+
+
+class NominalBranchError(RuntimeError):
+    """A derived/pinned nominal is off the robust TEI return-timing branch
+    (see ENABLE_ROBUST_TEI_SEED / check_nominal)."""
+
+
+# Robust-branch plausibility windows for the NOMINAL (see check_nominal). The
+# discriminators are TRANS-EARTH COAST and TEI dv — NOT EI GET or landing
+# longitude. Coast is config-INVARIANT: the TEI return-timing solve's own accept
+# gate hard-codes |TOF - 59.6 h| < 0.5 h, so every good nominal is ~59.6 h by
+# construction, whatever the model config. EI GET and lon DRIFT with config
+# (archived good nominals span EI 194-202 h / lon 70..-178 deg) and OVERLAP the
+# min-energy bad branch, so gating on them false-fails good runs (the definitive
+# apollo11_final10000 sits at EI 198.2 h / lon 122.7 — good branch). Windows
+# verified to separate every archived good nominal (coast 59.60-59.72 h, dv
+# 985-1012) from every bad one (coast 63.6-64.0 h, dv 945-947) with margin.
+NOMINAL_COAST_RANGE_H = (58.5, 61.0)      # trans-Earth coast (EI - TEI ignition)
+NOMINAL_TEI_DV_RANGE  = (975.0, 1045.0)   # TEI dv magnitude, m/s
+NOMINAL_FPA_RANGE     = (-7.5, -5.5)       # delivered entry FPA, deg (wide net)
+
+
+def check_nominal(nom, enforce=None, label="nominal"):
+    """Plausibility-gate a derived or pinned nominal BEFORE a run spends compute.
+
+    Hard-fails (raises NominalBranchError) when the nominal sits on the fragile
+    min-energy TEI return branch instead of the robust ~59.6 h / ~1,008 m/s
+    branch — the silent cross-architecture failure the ENABLE_ROBUST_TEI_SEED
+    fallback targets but cannot guarantee on arbitrary hardware. Returns True on
+    pass. `enforce` defaults to None -> raises UNLESS the user has explicitly
+    opted out (APOLLO_SKIP_NOMINAL_CHECK / APOLLO_DISABLE_ROBUST_TEI_SEED), in
+    which case a failure is downgraded to a WARNING and returns False. Callers
+    that must never proceed off-branch (cluster preflight) pass enforce=True.
+    """
+    import math
+    if enforce is None:
+        enforce = not (_nl_envflag("APOLLO_SKIP_NOMINAL_CHECK")
+                       or _nl_envflag("APOLLO_DISABLE_ROBUST_TEI_SEED"))
+
+    def _fin(x):
+        return isinstance(x, (int, float)) and math.isfinite(x)
+
+    problems = []
+    ti = nom.get("tei_ignition_t_s"); ei = nom.get("ei_t_s")
+    dv = nom.get("tei_dv_ms");        fpa = nom.get("fpa_at_entry_deg")
+    coast_h = None
+    # Fail CLOSED on missing/non-finite required fields — an unverifiable nominal
+    # must not pass by default (this runs before compute is committed).
+    if not (_fin(ti) and _fin(ei) and _fin(dv) and _fin(fpa)):
+        problems.append("required field(s) missing/non-finite "
+                        "(tei_ignition_t_s=%r ei_t_s=%r tei_dv_ms=%r "
+                        "fpa_at_entry_deg=%r)" % (ti, ei, dv, fpa))
+    else:
+        coast_h = (ei - ti) / 3600.0
+        lo, hi = NOMINAL_COAST_RANGE_H
+        if not (lo <= coast_h <= hi):
+            problems.append("trans-Earth coast %.3f h outside [%.1f, %.1f] h "
+                            "(min-energy branch ~63.6 h)" % (coast_h, lo, hi))
+        lo, hi = NOMINAL_TEI_DV_RANGE
+        if not (lo <= dv <= hi):
+            problems.append("TEI dv %.1f m/s outside [%.0f, %.0f] m/s "
+                            "(min-energy branch ~945 m/s)" % (dv, lo, hi))
+        lo, hi = NOMINAL_FPA_RANGE
+        if not (lo <= fpa <= hi):
+            problems.append("entry FPA %.3f deg outside [%.1f, %.1f] deg"
+                            % (fpa, lo, hi))
+    if not bool(nom.get("full_success", False)):
+        problems.append("full_success is not True")
+    if not bool(nom.get("entry_success", False)):
+        problems.append("entry_success is not True")
+
+    if not problems:
+        print("  check_nominal[%s]: OK (TEI dv %.1f m/s, coast %.2f h)"
+              % (label, dv, coast_h))
+        return True
+
+    msg = ("check_nominal[%s] FAILED — nominal is off the robust TEI "
+           "return-timing branch:\n  - %s\n"
+           "ROOT CAUSE: the 3-DOF TEI return-timing solve is ill-conditioned / "
+           "multi-rooted; on some hardware even the ENABLE_ROBUST_TEI_SEED "
+           "fallback can miss, leaving the nominal on the FRAGILE min-energy "
+           "branch (fleet entry-FPA sigma ~0.7 deg vs 0.09, ~9%% entry-g "
+           "breakups, ~77%% vs ~88%% success).\n"
+           "REMEDY: pin a known-good nominal_results.json (plus ei/bplane/ca/"
+           "od_cov targets) from a machine that converged, or re-derive. "
+           "Override this gate with APOLLO_SKIP_NOMINAL_CHECK=1."
+           % (label, "\n  - ".join(problems)))
+    if enforce:
+        raise NominalBranchError(msg)
+    print("WARNING: " + msg)
+    return False
+
+
 # ============================================================
 # Physics
 # ============================================================
@@ -8902,35 +9007,83 @@ def run_mission(perturb=None, capture_trajectories=False):
                 _lat_hold, _ = eci_to_latlon(best_sim["entry_state"][:3],
                                              best_sim["entry_t"])
                 _lat_hold = float(_lat_hold)
-                def _resid_tof(dv_vec):
+                def _resid_tof_to(dv_vec, tof_tgt=_TOF_TGT):
                     s_ = simulate_burn_vec(dv_vec)
                     if s_ is None:
                         return [1e7, 1e7, 1e7]
                     return [(s_["entry_fpa_deg"] + 6.5) * 1.0e5,
-                            ((s_["entry_t"] - t_tei) - _TOF_TGT) * 30.0,
+                            ((s_["entry_t"] - t_tei) - tof_tgt) * 30.0,
                             (s_["lat"] - _lat_hold) * 5.0e3]
+                # PRIMARY: single joint 3-DOF solve from the corridor-graze seed.
+                # On most numerical environments this reaches Apollo's 59.6 h /
+                # ~1,008 m/s return directly (validated laptop nominal 998.2 m/s).
+                _s_tof = None
                 try:
-                    _sol_t = least_squares(_resid_tof, dv0, method='trf',
+                    _sol_t = least_squares(_resid_tof_to, dv0, method='trf',
                                            x_scale='jac', ftol=1e-12,
                                            xtol=1e-12, gtol=1e-12,
                                            diff_step=1e-4, max_nfev=60)
                     _s_tof = simulate_burn_vec(_sol_t.x)
-                    _ok_t = (_s_tof is not None
-                             and abs(_s_tof["entry_fpa_deg"] + 6.5) < 0.3
-                             and abs((_s_tof["entry_t"] - t_tei) - _TOF_TGT)
-                                 < 0.5 * 3600.0)
-                    if globals().get("_TEI_DEBUG"):
-                        if _s_tof is not None:
-                            print(f"  TOF dbg: dv={np.linalg.norm(_sol_t.x):.0f}"
-                                  f" fpa={_s_tof['entry_fpa_deg']:.2f}"
-                                  f" TOF={(_s_tof['entry_t']-t_tei)/3600:.2f} h"
-                                  f" accepted={_ok_t}")
-                        else:
-                            print("  TOF dbg: joint solve returned no entry")
-                    if _ok_t:
-                        best_sim = _s_tof
                 except Exception:
-                    pass
+                    _s_tof = None
+                _ok_t = (_s_tof is not None
+                         and abs(_s_tof["entry_fpa_deg"] + 6.5) < 0.3
+                         and abs((_s_tof["entry_t"] - t_tei) - _TOF_TGT)
+                             < 0.5 * 3600.0)
+                if globals().get("_TEI_DEBUG"):
+                    print("  TOF dbg: %s" % (
+                        ("dv=%.0f fpa=%.2f TOF=%.2fh accepted=%s" % (
+                            np.linalg.norm(_sol_t.x), _s_tof["entry_fpa_deg"],
+                            (_s_tof["entry_t"]-t_tei)/3600, _ok_t))
+                        if _s_tof is not None else "joint solve returned no entry"),
+                        flush=True)
+                if _ok_t:
+                    best_sim = _s_tof
+                elif globals().get("ENABLE_ROBUST_TEI_SEED", True):
+                    # ROBUST MULTI-SEED FALLBACK (cross-arch nominal-branch
+                    # recovery). The primary seeds at the min-energy
+                    # corridor graze (~945 m/s); under some FP/BLAS environments
+                    # (EPYC x86 vs Apple ARM — SAME scipy/numpy) its trust region
+                    # collapses early (premature xtol stop, verified nfev=32) and
+                    # the nominal silently keeps the FRAGILE 63.6 h / 945 m/s
+                    # branch (fleet EI-FPA sigma 0.73 deg vs 0.09, ~9 % entry-g
+                    # failures, 77 % vs 88 % success). This 3-DOF solve is
+                    # genuinely ill-conditioned and multi-rooted (a 0.3 m/s seed
+                    # change flips the outcome), so instead of one graze-seeded
+                    # shot, RE-SEED at a spread of magnitudes around Apollo's
+                    # planned TEI (~1,008 m/s, sourced) in the graze direction;
+                    # among solutions that clear the corridor + 59.6 h TOF gate,
+                    # take the MINIMUM-dv one — the efficient / Apollo-faithful
+                    # root (validated on x86: recovers 995 m/s / 59.6 h / lon 175,
+                    # matching the laptop's 998 / 175.77). Runs ONLY when the
+                    # primary fails, so a machine where it already passes (the
+                    # pinned laptop nominal) is untouched / bit-identical. Uses a
+                    # SOURCED physical magnitude, not our reference answer, so it
+                    # is legitimate on arbitrary hardware — no pin required.
+                    _u = best_burn_dir
+                    _cands = []
+                    for _seed_mag in (1008.0, 985.0, 1030.0, 960.0, 1000.0):
+                        try:
+                            _sr = least_squares(_resid_tof_to, _seed_mag * _u,
+                                                method='trf', x_scale='jac',
+                                                ftol=1e-12, xtol=1e-12,
+                                                gtol=1e-12, diff_step=1e-4,
+                                                max_nfev=200)
+                        except Exception:
+                            continue
+                        _mr = simulate_burn_vec(_sr.x)
+                        if (_mr is not None
+                                and abs(_mr["entry_fpa_deg"] + 6.5) < 0.3
+                                and abs((_mr["entry_t"] - t_tei) - _TOF_TGT)
+                                    < 0.5 * 3600.0):
+                            _cands.append(_mr)
+                    if globals().get("_TEI_DEBUG"):
+                        print("  TOF robust-seed: %d valid roots, dvs=%s" % (
+                            len(_cands),
+                            sorted(round(c["dv_mag"], 1) for c in _cands)),
+                            flush=True)
+                    if _cands:
+                        best_sim = min(_cands, key=lambda s: s["dv_mag"])
             # NOMINAL: capture the entry target from the finite-thrust result.
             # (Capture ONLY from a nominal run, so a perturbed trial can never
             # corrupt the target with an off-nominal landing point.)
@@ -9757,6 +9910,18 @@ def main(n=1000,
             print("  Capturing nominal target(s) for TEI / B-plane targeting...")
             run_mission(perturb=None, capture_trajectories=False)
 
+    # Robust-branch plausibility gate: abort BEFORE the MC loop if the nominal
+    # (freshly derived OR pinned-on-resume) landed on the fragile min-energy TEI
+    # return branch. json_path exists in both branches at this point.
+    try:
+        import json as _json
+        with open(json_path) as _f:
+            _nomchk = _json.load(_f)
+    except (OSError, ValueError):
+        _nomchk = None
+    if _nomchk is not None:
+        check_nominal(_nomchk, label=os.path.basename(os.path.normpath(outdir)))
+
     # Persist the captured entry target so resume batches load it instead of
     # re-running the nominal to recapture it.
     if (globals().get("ENABLE_TEI_TARGETING", False)
@@ -10022,6 +10187,17 @@ def main_parallel(n=1000,
         if need_ei or need_bp or need_ca:
             print("  Capturing nominal target(s) for TEI / B-plane targeting...")
             run_mission(perturb=None, capture_trajectories=False)
+
+    # Robust-branch plausibility gate (also guards cluster setup: do_setup calls
+    # main_parallel(indices=[])). Aborts BEFORE the MC loop on a min-energy-branch
+    # nominal. json_path exists here whether freshly derived or pinned.
+    try:
+        with open(json_path) as _f:
+            _nomchk = _json.load(_f)
+    except (OSError, ValueError):
+        _nomchk = None
+    if _nomchk is not None:
+        check_nominal(_nomchk, label=os.path.basename(os.path.normpath(outdir)))
 
     # --- persist targets so resume batches skip re-running nominal ----------
     if (globals().get("ENABLE_TEI_TARGETING", False)

@@ -280,16 +280,16 @@ KNOWN LIMITATIONS
    slots run a 3-DOF fixed-epoch closest-approach correction, TEI
    seeds a planned-return FPA/TOF→EI-epoch/latitude solve, and the
    trans-Earth chain targets the full entry point. The Apollo
-   fire/waive pattern emerges untuned (~92% of the fleet flies exactly
+   fire/waive pattern emerges untuned (~84% of the fleet flies exactly
    one translunar correction; trans-Earth trims ~2 m/s median vs
    Apollo's single 1.5). The RESIDUAL is that this is a DISCRETE-slot
    schedule-keeper, not a true continuous filter: its knowledge sigmas
    and ~50 km deadband are pre-mission-analysis estimates, the trans-
-   Earth chain runs ~1 burn above Apollo, and ~17% of returns still
-   pay a displaced-recovery-zone cost on hypersensitive corridor-edge
-   geometries — the honest arrival dispersion Apollo's real-time
-   tracking existed to manage. (The nominal TEI ΔV ~998 m/s vs
-   Apollo's 1,008 reflects lunar-orbit geometry, not a propellant
+   Earth chain runs ~1 burn above Apollo, and ~13% of returns pay a
+   displaced-recovery-zone cost of more than 100 km on hypersensitive
+   corridor-edge geometries — the honest arrival dispersion Apollo's
+   real-time tracking existed to manage. (The nominal TEI ΔV ~998 m/s
+   vs Apollo's 1,008 reflects lunar-orbit geometry, not a propellant
    error.)
 
 3. Rendezvous ΔV is computed, not flown as integrated burns.

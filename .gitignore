@@ -39,6 +39,8 @@ JBIS2026/
 # guide live here locally but are intentionally excluded from the release.
 CLAUDE.md
 paper.md
+paper-updated.md
+paper-updated.pdf
 make_pdf.py
 make_docx.py
 test_*.py

@@ -133,7 +133,21 @@ def do_preflight(outdir):
     if missing:
         print("PREFLIGHT_MISSING " + " ".join(missing))
         sys.exit(1)
-    print("PREFLIGHT_OK (pinned nominal present: " + " ".join(req) + ")")
+    # Upgrade the guard from "files present" to "files present AND on the robust
+    # TEI return branch": a pinned-but-bad nominal (min-energy branch, e.g. from
+    # a cross-arch re-derive) must not reach the shard array. enforce=True: a
+    # production run never proceeds off-branch.
+    import json
+    import apollo11
+    try:
+        with open(os.path.join(outdir, "nominal_results.json")) as f:
+            nom = json.load(f)
+        apollo11.check_nominal(nom, enforce=True, label=outdir)
+    except apollo11.NominalBranchError as e:
+        print("PREFLIGHT_BADBRANCH " + str(e).splitlines()[0])
+        sys.exit(3)
+    print("PREFLIGHT_OK (pinned nominal present + robust branch: "
+          + " ".join(req) + ")")
     sys.exit(0)
 
 
