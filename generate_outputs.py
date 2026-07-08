@@ -1202,6 +1202,31 @@ def generate_plots(df, nominal_traj, nominal_results, outdir):
         plt.close()
         print("  ✓ trajectory_3d.png")
 
+    # 7) Mission-outcome donut (success vs failure) — mirrors the sibling
+    #    dashboard's outcome donut. Success = landed AND all three returned
+    #    alive (the mission_success definition the headline stat uses).
+    _ms = (df["mission_success"].fillna(False).astype(bool)
+           if "mission_success" in df.columns
+           else df["full_success"].fillna(False).astype(bool))
+    _succ = int(_ms.sum())
+    _fail = n_trials - _succ
+    fig, ax = plt.subplots(figsize=(4.2, 4.2))
+    ax.grid(False)
+    if _fail:
+        ax.pie([_succ, _fail], colors=["#2D5A3D", "#C73E1D"],
+               labels=[f"success\n{_succ}", f"failure\n{_fail}"],
+               wedgeprops=dict(width=0.42), startangle=90,
+               textprops=dict(fontsize=11))
+    else:
+        ax.pie([_succ], colors=["#2D5A3D"], labels=[f"success\n{_succ}"],
+               wedgeprops=dict(width=0.42), startangle=90)
+    ax.set_title(f"Mission outcome (n={n_trials})")
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "mission_outcome.png"), dpi=110,
+                bbox_inches="tight")
+    plt.close()
+    print("  ✓ mission_outcome.png")
+
 
 def generate_dashboard(df, nominal_results, outdir):
     """Generate dashboard.html consolidating results."""
@@ -1398,9 +1423,12 @@ def generate_dashboard(df, nominal_results, outdir):
     # this is the per-trial cost, not the amortized wall time.
     _trial_times = df.get("trial_time_s", pd.Series([], dtype=float)).dropna()
     mean_trial_time = float(_trial_times.mean()) if len(_trial_times) else None
-    trial_time_sub = (
-        f'<div style="font-size:12px;color:#6e6e73;margin-top:4px">'
-        f'~{mean_trial_time:.1f} s/trial avg</div>'
+    # Per-trial compute time, reported at the end of the intro sentence as
+    # "(<run label> · avg <N> s/trial (<M> min))" — mirrors the sibling dashboard.
+    _run_label = os.path.basename(os.path.normpath(outdir))
+    compute_str = (
+        f" ({_run_label} · avg {mean_trial_time:,.0f} s/trial "
+        f"({mean_trial_time/60:.1f} min))"
         if mean_trial_time is not None else "")
 
     # Launch stats
@@ -1474,11 +1502,11 @@ timeline. Per-trial phase timing is saved under <code>trials/</code>.</p>
 <h1>Apollo 11 Physics-Integrated Monte Carlo</h1>
 <p style="color:#6e6e73">{n} simulated Apollo 11 missions using 1969-era hardware
 parameters and dispersions. Each trial runs full ODE integration of every
-mission phase from Kennedy Space Center liftoff through Pacific splashdown.</p>
+mission phase from Kennedy Space Center liftoff through Pacific splashdown{compute_str}.</p>
 
 <div class="summary-card">
 <div class="stats">
-  <div class="stat"><div class="label">Trials</div><div class="value">{n}</div>{trial_time_sub}</div>
+  <div class="stat"><div class="label">Trials</div><div class="value">{n}</div></div>
   <div class="stat"><div class="label">Mission Success</div><div class="value">{100*succ/max(1,n):.1f}%</div></div>
   <div class="stat"><div class="label">Full Crew Survived</div><div class="value">{100*crew_survived/max(1,n):.1f}%</div></div>
 </div>
@@ -1494,6 +1522,9 @@ shortcuts). When a mission fails, the cause is recorded as a
 each cause in plain language, and the Crew Survival section models the
 Apollo abort architecture that saved the crew even when missions failed.
 </div>
+
+<h2>Mission Outcome</h2>
+<div class="plot">{embed_image("mission_outcome.png")}</div>
 
 <h2>Crew Survival vs Mission Success</h2>
 <div class="context">
