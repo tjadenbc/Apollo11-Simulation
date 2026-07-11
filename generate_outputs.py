@@ -1007,11 +1007,18 @@ def generate_plots(df, nominal_traj, nominal_results, outdir):
             '#8c564b', '#e377c2', '#17becf', '#bcbd22', '#393b79']
     bars = ax.bar(names, rates, color=cmap)
     ax.set_ylabel("Cumulative success rate (%)")
-    ax.set_ylim(0, 110)
+    # Zoom the y-axis to the data: start at the LOWEST bar rounded DOWN to the
+    # nearest 5% (so the small phase-to-phase drops are legible), with a little
+    # headroom above 100% for the value labels. Data-driven, so it adapts to any
+    # run (e.g. an 88% low floors to 85%, a 93% low floors to 90%).
+    _y_lo = 5.0 * np.floor(min(rates) / 5.0)
+    _y_hi = 100.0 + 0.10 * (100.0 - _y_lo)
+    ax.set_ylim(_y_lo, _y_hi)
     ax.set_title(f"Apollo 11 Monte Carlo: Cumulative Survival by Timeline Phase "
                  f"({n_trials} trials; final bar = mission success)")
+    _lbl_off = 0.015 * (_y_hi - _y_lo)
     for b, c, r in zip(bars, counts, rates):
-        ax.text(b.get_x() + b.get_width()/2, r + 1.5,
+        ax.text(b.get_x() + b.get_width()/2, r + _lbl_off,
                   f"{r:.1f}%", ha='center', fontsize=8)
     plt.tight_layout()
     plt.savefig(os.path.join(outdir, "phase_survival.png"), dpi=110)

@@ -21,23 +21,26 @@ Across **10,000 trials** (seed 37, distributed on a compute cluster):
 
 | Metric | Estimate |
 |---|---|
-| **Full-mission success** | **88.1 %**  (95 % CI 87.4–88.7 %) |
-| **Crew survival** | **94.1 %** |
+| **Full-mission success** | **88.0 %**  (95 % CI 87.3–88.6 %) |
+| **Crew survival** | **94.0 %** |
 
 "Mission success" follows NASA's actual objective: the crew reached the lunar
 surface **and** all three returned to Earth alive — even if a recovered in-flight
 anomaly occurred (e.g. a docking failure resolved by a contingency EVA crew
-transfer). Of the 8,808 successful missions, **8,643 were flawless** (no anomaly
-at all); 165 succeeded despite a recovered anomaly. The ~6-point gap between crew
+transfer). Of the 8,800 successful missions, **8,646 were flawless** (no anomaly
+at all); 154 succeeded despite a recovered anomaly. The ~6-point gap between crew
 survival and mission success is Apollo's abort architecture at work: many
 missions never complete the objective but still bring the crew home.
+
+The nominal trajectory reproduces Apollo 11's flown record end to end — burn
+times to within seconds, the major ΔV budgets to better than one percent, and a
+lunar touchdown **6.8 km from the targeted landing site** (Apollo 11's own
+as-flown miss of its aim point was about 6 km).
 
 The definitive run lives in [`outputs/final/`](outputs/final/).
 Open [`outputs/final/dashboard.html`](outputs/final/dashboard.html) in a browser
 for the full breakdown — failure-mode decomposition, per-astronaut death
 attribution, phase timing vs. Apollo 11's flown values, and known limitations.
-A companion [`outputs/final/Apollo11_Realism_Audit.html`](outputs/final/Apollo11_Realism_Audit.html)
-documents the stage-by-stage fidelity review behind the model.
 
 ## Repository layout
 
@@ -50,7 +53,7 @@ documents the stage-by-stage fidelity review behind the model.
 | `od_filter.py` | STM-LinCov orbit-determination covariance primitives for the MSFN ground-navigation model. |
 | `cluster_run.py`, `submit_mc.sh` | The SLURM sharding pipeline used to produce the definitive run on a compute cluster. |
 | `launch_tli_preset.json` | Cached launch/TLI targeting preset, pinned for cross-machine reproducibility. |
-| `outputs/final/` | **The definitive run**: per-trial results CSVs, the nominal trajectory, captured targeting products, the dashboard, the realism-audit report, and figures. |
+| `outputs/final/` | **The definitive run**: per-trial results CSVs, the nominal trajectory, captured targeting products, the dashboard, and figures. |
 
 ## Quick start
 
@@ -95,12 +98,23 @@ behaviour. A no-landing, cislunar-only profile is enabled with the
 
 Local serial and parallel drivers are **bit-identical** (per-trial perturbations
 are pre-generated in the main process and dispatched by trial index). Cluster
-runs are *not* bit-identical to a laptop (different scipy/numpy builds), so each
+runs are *not* bit-identical to a laptop (different CPU/BLAS numerics), so each
 cluster run is treated as its own population. The captured targeting products
 (`ei_target.json`, `bplane_target.json`, `ca_target.json`, `od_cov.json`,
 `nominal_results.json`, `launch_tli_preset.json`) are pinned into the run
 directory so cross-machine numerical skew cannot flip the marginal
-nominal-trajectory branches.
+nominal-trajectory branches — but pinning is a convenience, not a requirement:
+the nominal derivation carries a robust multi-seed fallback and a
+`check_nominal()` plausibility gate, and an independent cluster derivation of
+the nominal reproduced the pinned fleet's success count exactly in a
+2,000-trial matched-seed test.
+
+## Related project
+
+A sibling simulation applies the same fidelity-first methodology to NASA's
+**Artemis I** mission:
+[ArtemisI-Simulation](https://github.com/tjadenbc/ArtemisI-Simulation). The
+matched 1969-vs-2026 comparison is maintained with that project.
 
 ## Definitive-run trial data
 
@@ -121,8 +135,41 @@ the U.S. The MIT license below covers the original source code only — see
 
 ## Use of generative AI
 
-This project was developed with substantial assistance from Claude (Anthropic),
-under the author's direction and review.
+This project was produced in a sustained collaboration between the author and
+Claude (Anthropic), a large language model used across successive versions over
+the project's development, and the division of labor was consequential enough to
+warrant a fuller statement than the customary disclosure line. The conception is
+the author's: the question, the decision to answer it with a physics-integrated
+Monte Carlo rather than a reliability fault tree, and the design doctrines that
+define the model — fidelity first; as-planned targeting; the mission-success
+definition; and the requirement that every stage be validated against the
+historical record before being built upon. Claude performed essentially all of
+the implementation: the simulation code, the guidance and targeting solvers, the
+failure and crew-survival models, the cluster pipeline, the excavation of the
+historical sources behind the calibrated constants, the diagnostic
+investigations, the statistical analysis of the Monte Carlo campaigns, and the
+drafting of the project's documentation and manuscript. Design and refinement
+were a genuine dialogue between the two: the highest-leverage corrections
+typically began as the author's questions or catches — among them the as-planned
+landing-aim doctrine and the demand for the cross-machine reproducibility tests
+described above — and were then diagnosed and engineered by Claude, while
+Claude's technical designs were in turn constrained, redirected, and sometimes
+rejected by the author's judgment of what faithfulness required.
+
+The process safeguards matter as much as the division of labor. The author
+directed the work throughout; set the validation discipline under which no model
+change was adopted without tiered Monte Carlo revalidation; reviewed, verified,
+and edited all code, numerical results, physical assumptions, and text; and
+takes full responsibility for the content of this project. Errors surfaced late
+in development — in the model's landing-site targeting and in the project's own
+reported numbers — were caught by exactly that review structure, some by the
+author's reading and some by adversarial verification passes the author
+required. The honest summary is that the author served as principal
+investigator — conception, judgment, quality control, and accountability — while
+Claude served as the research staff: construction, diagnosis, analysis, and
+drafting at a speed and volume no individual could match. The author could not
+have completed this project without Claude, and Claude could not have completed
+this project without the author.
 
 ## License
 

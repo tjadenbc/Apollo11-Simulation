@@ -34,7 +34,17 @@ mkdir -p "$LOGS"
 # APOLLO_ENV_PREFIX="APOLLO_NO_LANDING=1" (no-landing comparison) or "APOLLO_HAZARDS=1"
 # (landing + added 1969 hazards, the definitive run).
 WRAP_ENV="${APOLLO_ENV_PREFIX:-}"
-[ -n "$WRAP_ENV" ] && echo "env prefix on every job: $WRAP_ENV"
+if [ -n "$WRAP_ENV" ]; then
+    echo "env prefix on every job: $WRAP_ENV"
+else
+    # Loud reminder, not a refusal: the definitive config carries
+    # "APOLLO_HAZARDS=1 APOLLO_IGM_ROBUST=1" via APOLLO_ENV_PREFIX; a bare
+    # submit silently runs with hazards + IGM-robust OFF (a forgotten prefix
+    # once validated a run against the wrong config).
+    echo "WARNING: APOLLO_ENV_PREFIX is EMPTY — env-gated flags (APOLLO_HAZARDS,"
+    echo "         APOLLO_IGM_ROBUST, ...) will be OFF on every job. The definitive"
+    echo "         config uses: APOLLO_ENV_PREFIX=\"APOLLO_HAZARDS=1 APOLLO_IGM_ROBUST=1\""
+fi
 
 cd "$PROJ"
 

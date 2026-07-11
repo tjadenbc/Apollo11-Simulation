@@ -2,24 +2,24 @@
 APOLLO 11 — CREW SURVIVAL ANALYSIS (per astronaut)
 ======================================================================
 Total missions simulated:           10000
-Mission success (Moon + return):    8808  (88.1%)
+Mission success (Moon + return):    8800  (88.0%)
 
 PER-ASTRONAUT SURVIVAL
 ----------------------------------------------------------------------
   Astronaut   Role                            Survived     Rate
-  Armstrong   CDR — Lunar Module (surface)    9416/10000   94.2%
-  Aldrin      LMP — Lunar Module (surface)    9413/10000   94.1%
-  Collins     CMP — Command Module (orbit)    9611/10000   96.1%
+  Armstrong   CDR — Lunar Module (surface)    9406/10000   94.1%
+  Aldrin      LMP — Lunar Module (surface)    9409/10000   94.1%
+  Collins     CMP — Command Module (orbit)    9601/10000   96.0%
 
   Astronauts returned alive per mission:
-     0 of 3 survived:   389 missions (3.9%)
-     1 of 3 survived:   192 missions (1.9%)
-     2 of 3 survived:     9 missions (0.1%)
-     3 of 3 survived:  9410 missions (94.1%)
+     0 of 3 survived:   399 missions (4.0%)
+     1 of 3 survived:   191 missions (1.9%)
+     2 of 3 survived:     5 missions (0.1%)
+     3 of 3 survived:  9405 missions (94.0%)
 
   Total astronaut-flights:  30000
-  Returned alive:           28440  (94.8%)
-  Lost:                     1560
+  Returned alive:           28416  (94.7%)
+  Lost:                     1584
 
 WHY THE NUMBERS DIFFER BY ASTRONAUT
 ----------------------------------------------------------------------
@@ -29,7 +29,7 @@ lunar orbit and is NOT exposed to powered-descent, surface, or
 ascent risk. If the Lunar Module crew is lost, Collins's
 documented contingency was to return to Earth ALONE — so an LM
 loss does not kill him, though he must still complete a solo
-Earth return (modeled success rate 99.8%, from this
+Earth return (modeled success rate 99.6%, from this
 run's own TEI+entry statistics).
 
 Armstrong (CDR) and Aldrin (LMP) ride the Lunar Module to the
@@ -60,10 +60,10 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        Slightly worse than the translunar case (~85%).
 
   surface_lm_electrical_failure
-     Trials with this failure: 100
+     Trials with this failure: 99
      Recovery path: ascent_stage_cannot_arm
      Survival probability: 0%
-     Crew survived (sampled): 0/100 (0%)
+     Crew survived (sampled): 0/99 (0%)
      Explanation:
        An unrecoverable LM electrical/switchgear failure on the surface
        prevents arming the ascent engine. Sourced anchor: Apollo 11's own
@@ -101,10 +101,10 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        per-docking rate as the rendezvous docking.
 
   sm_failure_transearth
-     Trials with this failure: 182
+     Trials with this failure: 181
      Recovery path: no_lifeboat_on_return
      Survival probability: 10%
-     Crew survived (sampled): 22/182 (12%)
+     Crew survived (sampled): 22/181 (12%)
      Explanation:
        Catastrophic SM failure during the trans-Earth coast — the LM was
        jettisoned before TEI; there is no lifeboat. It mostly kills all
@@ -114,11 +114,23 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        hours before entry — that the crew can ride the remaining
        consumables down and return alive.
 
+  entry_heatshield_failure
+     Trials with this failure: 18
+     Recovery path: heatshield_breach
+     Survival probability: 0%
+     Crew survived (sampled): 0/18 (0%)
+     Explanation:
+       An ablative-heatshield char-through or delamination at the ~11
+       km/s lunar-return entry. This is independent of the g-load
+       corridor the guided entry already models — a material/bond failure
+       of the shield itself. Catastrophic; no Apollo heatshield ever
+       breached.
+
   descent_descent_propellant_exhausted
-     Trials with this failure: 121
+     Trials with this failure: 122
      Recovery path: abort_stage_LM_ascent_engine
      Survival probability: 70%
-     Crew survived (sampled): 84/121 (69%)
+     Crew survived (sampled): 86/122 (70%)
      Explanation:
        LM ran out of DPS propellant during powered descent. Apollo's
        'abort stage' procedure ignites the APS (ascent engine) while the
@@ -142,10 +154,10 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        rescue capability exists. LM crew lost; Collins returns alone.
 
   rendezvous_docking_failure
-     Trials with this failure: 90
+     Trials with this failure: 91
      Recovery path: eva_crew_transfer
      Survival probability: 90%
-     Crew survived (sampled): 83/90 (92%)
+     Crew survived (sampled): 77/91 (85%)
      Explanation:
        The LM closed with the CSM but the docking mechanism failed
        unrecoverably. SOURCED RATE: capture anomalies on 2 of ~21 program
@@ -184,6 +196,21 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        expended LM. The worst pre-jettison geometry; ~40% (estimate — no
        historical analogue).
 
+  sps_ignition_failure_loi
+     Trials with this failure: 8
+     Recovery path: free_return_survival
+     Survival probability: 97%
+     Crew survived (sampled): 8/8 (100%)
+     Explanation:
+       The single, non-redundant SPS failed to ignite for Lunar Orbit
+       Insertion. Apollo 11 flew a PURE FREE-RETURN approach by design:
+       with no LOI burn the spacecraft swings around the Moon and returns
+       to a survivable Earth entry WITHOUT any propulsion — the exact
+       recovery path Apollo 13 rode home. Free-return-class (~0.97); a
+       hair below the missed-SOI 0.98 because an SPS out also questions
+       the trans-Earth mid-course capability (mitigated by the SM RCS
+       and, on a real stack, the LM DPS, per Apollo 13).
+
   launch_s_ivb_first_ignition_failure
      Trials with this failure: 56
      Recovery path: abort_mode_IV_COI
@@ -197,11 +224,34 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        fuel — used only for lunar maneuvers in nominal mission. Crew
        survives easily.
 
+  transearth_no_entry_after_mcc
+     Trials with this failure: 4
+     Recovery path: transearth_no_entry_after_mcc
+     Survival probability: 0%
+     Crew survived (sampled): 0/4 (0%)
+
+  entry_skip_out_or_breakup
+     Trials with this failure: 14
+     Recovery path: lost_in_space_or_CM_breakup
+     Survival probability: 0%
+     Crew survived (sampled): 0/14 (0%)
+     Explanation:
+       Entry flight path angle either too shallow (skip-out) — capsule
+       bounces back into space on a long ballistic trajectory with no
+       second-chance entry within consumables window — or too steep
+       (burnup before parachute deployment).
+
+  descent_radar_dropout_marginal
+     Trials with this failure: 7
+     Recovery path: descent_radar_dropout_marginal
+     Survival probability: 70%
+     Crew survived (sampled): 6/7 (86%)
+
   sps_ignition_failure_tei
-     Trials with this failure: 16
+     Trials with this failure: 10
      Recovery path: stranded_in_lunar_orbit
      Survival probability: 0%
-     Crew survived (sampled): 0/16 (0%)
+     Crew survived (sampled): 0/10 (0%)
      Explanation:
        The single, non-redundant SPS failed to ignite for Trans-Earth
        Injection. Unlike the LOI no-start, there is no free-return
@@ -210,39 +260,23 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        landing profile the LM has been jettisoned before TEI, so there is
        no DPS lifeboat as on Apollo 13.)
 
-  recovery_parachute_failure
-     Trials with this failure: 1
-     Recovery path: cm_impact_no_chutes
+  micrometeoroid_hull_penetration
+     Trials with this failure: 5
+     Recovery path: cm_hull_puncture
      Survival probability: 0%
-     Crew survived (sampled): 0/1 (0%)
+     Crew survived (sampled): 0/5 (0%)
      Explanation:
-       Stage-13 parachute failure: 2 or more of the 3 main chutes lost,
-       so the CM cannot arrest its descent. Apollo was land-safe on 2 of
-       3 mains (Apollo 15 landed safely on two after an RCS-dump burn
-       collapsed one); losing a SECOND main is non-survivable. Rare
-       (~1e-4-class; no CM was ever lost to parachutes in the program).
-       Whole-CM fate at water impact — routes to 'all' at p_survive 0.0.
-
-  sps_ignition_failure_loi
-     Trials with this failure: 8
-     Recovery path: free_return_survival
-     Survival probability: 97%
-     Crew survived (sampled): 7/8 (88%)
-     Explanation:
-       The single, non-redundant SPS failed to ignite for Lunar Orbit
-       Insertion. Apollo 11 flew a PURE FREE-RETURN approach by design:
-       with no LOI burn the spacecraft swings around the Moon and returns
-       to a survivable Earth entry WITHOUT any propulsion — the exact
-       recovery path Apollo 13 rode home. Free-return-class (~0.97); a
-       hair below the missed-SOI 0.98 because an SPS out also questions
-       the trans-Earth mid-course capability (mitigated by the SM RCS
-       and, on a real stack, the LM DPS, per Apollo 13).
+       A natural-flux micrometeoroid penetrated the crew-cabin pressure
+       hull (orbital debris is EXCLUDED — that flux is a post-1969
+       artifact). A crew-hull puncture at mission velocities is
+       catastrophic. Whole-mission exposure; the rate is scaled by time-
+       in-space when exposure-scaling is enabled.
 
   nav_platform_unrecoverable
-     Trials with this failure: 13
+     Trials with this failure: 4
      Recovery path: manual_backup_and_ground_nav
      Survival probability: 85%
-     Crew survived (sampled): 13/13 (100%)
+     Crew survived (sampled): 4/4 (100%)
      Explanation:
        An unrecoverable loss of the primary guidance platform
        (IMU/optics) — the recoverable-degradation branch is a crew-
@@ -253,30 +287,6 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        Mission fails; ~0.85 crew survival reflects the residual risk of a
        degraded entry corridor. (An UNCREWED vehicle has no such backup —
        the key native Apollo-vs-Artemis distinction.)
-
-  micrometeoroid_hull_penetration
-     Trials with this failure: 10
-     Recovery path: cm_hull_puncture
-     Survival probability: 0%
-     Crew survived (sampled): 0/10 (0%)
-     Explanation:
-       A natural-flux micrometeoroid penetrated the crew-cabin pressure
-       hull (orbital debris is EXCLUDED — that flux is a post-1969
-       artifact). A crew-hull puncture at mission velocities is
-       catastrophic. Whole-mission exposure; the rate is scaled by time-
-       in-space when exposure-scaling is enabled.
-
-  transearth_no_entry_after_mcc
-     Trials with this failure: 1
-     Recovery path: transearth_no_entry_after_mcc
-     Survival probability: 0%
-     Crew survived (sampled): 0/1 (0%)
-
-  descent_radar_dropout_marginal
-     Trials with this failure: 5
-     Recovery path: descent_radar_dropout_marginal
-     Survival probability: 70%
-     Crew survived (sampled): 3/5 (60%)
 
   launch_s_ic_underperformance_crash
      Trials with this failure: 9
@@ -293,10 +303,10 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        parachute failure).
 
   surface_eva_suit_fatality
-     Trials with this failure: 9
+     Trials with this failure: 5
      Recovery path: eva_fatality_partner_returns
      Survival probability: 0%
-     Crew survived (sampled): 0/9 (0%)
+     Crew survived (sampled): 0/5 (0%)
      Explanation:
        A terminal suit/PLSS failure during the surface EVA kills one of
        the two moonwalkers (0 failures in 28 program man-EVAs; the fatal
@@ -305,64 +315,11 @@ OUTCOME BREAKDOWN — what happened to the crew, by failure mode
        LM-crew death (p_survive 0.5 across the exposed pair); the
        survivor and Collins return.
 
-  entry_skip_out_or_breakup
-     Trials with this failure: 3
-     Recovery path: lost_in_space_or_CM_breakup
-     Survival probability: 0%
-     Crew survived (sampled): 0/3 (0%)
-     Explanation:
-       Entry flight path angle either too shallow (skip-out) — capsule
-       bounces back into space on a long ballistic trajectory with no
-       second-chance entry within consumables window — or too steep
-       (burnup before parachute deployment).
-
   descent_agc_alarm_unrecovered
      Trials with this failure: 1
      Recovery path: descent_agc_alarm_unrecovered
      Survival probability: 70%
-     Crew survived (sampled): 0/1 (0%)
-
-  entry_heatshield_failure
-     Trials with this failure: 9
-     Recovery path: heatshield_breach
-     Survival probability: 0%
-     Crew survived (sampled): 0/9 (0%)
-     Explanation:
-       An ablative-heatshield char-through or delamination at the ~11
-       km/s lunar-return entry. This is independent of the g-load
-       corridor the guided entry already models — a material/bond failure
-       of the shield itself. Catastrophic; no Apollo heatshield ever
-       breached.
-
-  cm_sm_separation_failure
-     Trials with this failure: 2
-     Recovery path: sm_attached_cannot_trim
-     Survival probability: 0%
-     Crew survived (sampled): 0/2 (0%)
-     Explanation:
-       The CM/SM pyrotechnic separation failed, leaving the Service
-       Module attached at entry. The blunt-body CM cannot hold its
-       heatshield-forward trim with the SM mass attached, so it cannot
-       fly the entry corridor. Catastrophic. Rare (~1e-4-class pyro
-       reliability); no Apollo CM ever failed to separate.
-
-  surface_spe_eva_fatality
-     Trials with this failure: 1
-     Recovery path: spe_both_moonwalkers_lost_collins_solo
-     Survival probability: 0%
-     Crew survived (sampled): 0/1 (0%)
-     Explanation:
-       A severe (Aug-1972-class) solar particle event struck during the
-       unsheltered lunar surface stay. On the surface the crew has only
-       suit shielding (minimal) and the LM cabin (not a storm shelter —
-       the 1969 contingency was a multi-hour CSM abort), so a severe
-       event delivers a lethal BFO dose to BOTH moonwalkers. Collins is
-       CM-sheltered (~90% attenuation) and returns solo. This is the
-       marquee 1969 surface hazard: the Aug-1972 SPE fell between Apollo
-       16 and 17 and would have been lethal to a surface crew. Routes via
-       the surface_ prefix to lm_crew at p_survive 0.0 — both LM crew
-       lost, Collins solo at csm_solo_rate. (Landing-mission only; the
-       no-landing profile has no surface stay.)
+     Crew survived (sampled): 1/1 (100%)
 
   launch_parking_orbit_decays_into_atmosphere
      Trials with this failure: 1

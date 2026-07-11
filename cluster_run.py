@@ -146,6 +146,26 @@ def do_preflight(outdir):
     except apollo11.NominalBranchError as e:
         print("PREFLIGHT_BADBRANCH " + str(e).splitlines()[0])
         sys.exit(3)
+    # The steered-TLI-cutoff preset is part of the nominal's identity: it is
+    # loaded from NEXT TO apollo11.py (not the outdir), and if missing or
+    # fingerprint-mismatched every worker would silently RE-SOLVE it on the
+    # hypersensitive arrival-phase manifold — shifting the landing site out
+    # from under the pinned targets. Refuse unless the on-disk preset would
+    # actually be loaded.
+    if getattr(apollo11, "ENABLE_LAUNCH_CONTINUITY", False):
+        ppath = apollo11._preset_path()
+        want = apollo11._preset_fingerprint()
+        try:
+            with open(ppath) as f:
+                have = json.load(f).get("fingerprint")
+        except (OSError, ValueError):
+            have = None
+        if have != want:
+            print(f"PREFLIGHT_PRESET_STALE {ppath}: fingerprint "
+                  f"{have!r} != expected {want!r} — workers would re-solve "
+                  f"the TLI preset (arrival-phase / landing-site risk); "
+                  f"sync the validated launch_tli_preset.json first")
+            sys.exit(4)
     print("PREFLIGHT_OK (pinned nominal present + robust branch: "
           + " ".join(req) + ")")
     sys.exit(0)

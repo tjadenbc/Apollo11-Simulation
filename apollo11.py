@@ -1015,7 +1015,7 @@ LOI1_PERI_TARGET_KM  = 111.12   # 60.0 nmi (Table 7-V)
 LOI1_APO_TARGET_KM   = 314.28   # 169.7 nmi
 LOI2_PERI_TARGET_KM  = 100.01   # 54 nmi (the PLANNED target, MSC-00171 §5)
 LOI2_APO_TARGET_KM   = 122.23   # 66 nmi
-LUNAR_DOI_GET_S      = 366_037.0  # DOI GET timed to LAND AT TRANQUILITY (Stage
+LUNAR_DOI_GET_S      = 365_985.0  # DOI GET timed to LAND AT TRANQUILITY (Stage
                                   # 7b). The real DOI GET (101:36:14
                                   # = 365,774 s) was itself CHOSEN by RTCC so the
                                   # descent reached Site 2; our arrival-phase
@@ -1034,6 +1034,16 @@ LUNAR_DOI_GET_S      = 366_037.0  # DOI GET timed to LAND AT TRANQUILITY (Stage
                                   # coasts TO this GET (absorbs upstream shifts);
                                   # TEI anchored separately so the return/splash
                                   # are unchanged.
+                                  # RECALIBRATED with the definitive-force-model
+                                  # preset re-solve (J3-J6 zonals): 366,037 ->
+                                  # 365,985 (101:39:45; offset vs the historical
+                                  # GET now +211 s, was +260). Same sweep method
+                                  # (measured -0.0583 deg lon/s); nominal lands
+                                  # 6.8 km from Site 2 / Tranquility Base. PAIRING
+                                  # RULE: any launch_tli_preset re-solve shifts the
+                                  # arrival phase -> re-run the DOI-GET sweep and
+                                  # re-validate the landing before trusting any
+                                  # nominal-derived target.
 TEI_PLAN_GET_S       = 487_422.0  # planned TEI GET 135:23:42 (Table 8.6-II).
                                   # Same anchor principle on the return side:
                                   # the post-rendezvous coast runs TO (plan −
@@ -2468,15 +2478,18 @@ if ENABLE_LAUNCH_CONTINUITY and ENABLE_REAL_EPHEMERIS:
     # lineage: (13.480, 146.222) masscal-era; (13.14, 177.18) before that.
     # Re-derived after Stage 5 (as-planned LOI + nautical-miles
     # units fix + planned-GET timeline anchors + TEI block-data commitment):
-    # the as-planned nominal's own zone. NOW ~150 km FROM APOLLO'S ACTUAL
-    # SPLASHDOWN — (13.08 N, 170.59 W) vs the real 13.30 N / 169.15 W:
-    # latitude 0.22 deg, longitude −1.4 deg. The TEI now fires at the
-    # PLANNED GETI (135.45 vs plan 135.395 h) and EI arrives 7 min from the
-    # real 195:03. Prior zones for lineage: (12.907, −159.560) re-aim-era
-    # (+9.6 deg); (14.268, 118.582) Stage-1d; (13.480, 146.222) masscal-era;
-    # (13.14, 177.18) before that.
-    SPLASH_TARGET_LAT_DEG = 13.080
-    SPLASH_TARGET_LON_DEG = -170.592
+    # the as-planned nominal's own zone. RE-DERIVED after the definitive-
+    # force-model preset re-solve + DOI-GET recalibration: NOW ~80 km FROM
+    # APOLLO'S ACTUAL SPLASHDOWN — (13.379 N, 169.845 W) vs the real
+    # 13.30 N / 169.15 W: latitude 0.08 deg, longitude −0.7 deg. Metric-only
+    # constant under the production flags (per-opportunity zones do the
+    # aiming); re-derive from the nominal's recovery_zone_lat/lon whenever
+    # the return geometry changes. Prior zones for lineage: (13.080,
+    # −170.592) stage-5-era; (12.907, −159.560) re-aim-era (+9.6 deg);
+    # (14.268, 118.582) Stage-1d; (13.480, 146.222) masscal-era; (13.14,
+    # 177.18) before that.
+    SPLASH_TARGET_LAT_DEG = 13.379
+    SPLASH_TARGET_LON_DEG = -169.845
 
 _CACHED_LAUNCH_TLI = None   # (t_ign_angle_deg, vcut_ms) nominal guidance preset
 # Matched-pair reference for the preset: the preset steering solution is exact
@@ -2763,6 +2776,23 @@ def _fly_launched_tli(state_ins, t_ins, perturb, ign_angle_deg, vcut_ms,
     return state, t_cut, dv_tli
 
 
+def _preset_fingerprint():
+    """The launch/TLI preset cache fingerprint (az / transfer angle / target
+    version). Shared with cluster_run.do_preflight so a production run can
+    verify the on-disk preset would be LOADED (not silently re-solved per
+    worker on the hypersensitive arrival-phase manifold). Deliberately does
+    NOT carry force-model flags: a physics change must not auto-trigger a
+    re-solve — see the LUNAR_DOI_GET_S pairing rule."""
+    return (f"az{LAUNCH_AZIMUTH_DEG}_ang{TLI_TRANSFER_ANGLE_DEG}_"
+            f"{('v11site2' if globals().get('ENABLE_ASPLANNED_SITE', False) else 'v9nmiCA') if ENABLE_ASFLOWN_ARRIVAL else 'v7'}")
+
+
+def _preset_path():
+    """Absolute path of the disk-cached launch/TLI preset (module-local)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "launch_tli_preset.json")
+
+
 def _solve_launch_tli():
     """Derive the nominal TLI guidance preset (ignition angle, cutoff speed)
     from the NOMINAL launched orbit: ignite ~188 deg before Moon-arrival
@@ -2775,10 +2805,8 @@ def _solve_launch_tli():
     # the geometry constants and costs minutes — MC workers must not re-derive.
     import json as _json
     import os as _os
-    _fp = (f"az{LAUNCH_AZIMUTH_DEG}_ang{TLI_TRANSFER_ANGLE_DEG}_"
-           f"{('v11site2' if globals().get('ENABLE_ASPLANNED_SITE', False) else 'v9nmiCA') if ENABLE_ASFLOWN_ARRIVAL else 'v7'}")
-    _path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                          "launch_tli_preset.json")
+    _fp = _preset_fingerprint()
+    _path = _preset_path()
     try:
         with open(_path) as _f:
             _d = _json.load(_f)
