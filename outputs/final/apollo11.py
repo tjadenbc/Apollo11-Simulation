@@ -101,7 +101,16 @@ G_MOON   = MU_MOON / R_MOON**2
 # 10,000-trial run outputs/final (86.43% flawless / 88.08% mission). Per-trial
 # cost ~350 s laptop / ~625 s cluster.
 ENABLE_REAL_EPHEMERIS = True
-JD_LAUNCH = 2440419.0639   # 1969-07-16 13:32:00 UTC (Apollo 11 liftoff)
+# LAUNCH-WINDOW EXPERIMENTS: APOLLO_LAUNCH_DELAY_H shifts the liftoff epoch
+# within Apollo 11's real ~4 h 24 m window (window close required azimuth
+# ~106 deg vs the as-flown 72.058 — pair any delay with APOLLO_LAUNCH_AZ_DEG
+# re-solved for that slot, plus a fresh TLI preset [path auto-suffixed] and a
+# DOI-GET re-sweep, exactly the per-slot targeting load the real RTCC cut for
+# each window slot). Everything else is GET-anchored and carries over. Unset
+# => 0.0 => bit-identical.
+_LAUNCH_DELAY_H = float(os.environ.get("APOLLO_LAUNCH_DELAY_H", "0") or 0.0)
+JD_LAUNCH = 2440419.0639 + _LAUNCH_DELAY_H / 24.0
+                           # 1969-07-16 13:32:00 UTC (Apollo 11 liftoff)
 # ΔT = TT − UT for mid-1969: +39.7 s (Espenak/Meeus 1961–86 polynomial; USNO
 # tables bracket it: 39.2 s @1969.0 → 40.2 s @1970.0). The Meeus lunar/solar
 # series take TT (JDE); feeding them UTC directly put the Moon ~40 km back
@@ -168,7 +177,10 @@ ENABLE_ASFLOWN_ARRIVAL = True
 # needs departure-geometry / plane-targeted-TLI authority). Requires
 # ENABLE_LUNAR_LIBRATION. When OFF (with ASFLOWN_ARRIVAL on) the legacy
 # CA-point residual is used (bit-identical lineage, fingerprint-versioned).
-ENABLE_ASPLANNED_SITE = True
+ENABLE_ASPLANNED_SITE = (os.environ.get("APOLLO_ASPLANNED_SITE", "1") != "0")
+# Default ON (site-targeting, bit-identical); set APOLLO_ASPLANNED_SITE=0 to land at
+# the NATURAL close-approach point (no Stage-7b site re-aim) — used for novel launch
+# opportunities where a fixed site is not cleanly reachable by the re-aim.
 # AS-PLANNED aim = Apollo 11 LANDING SITE 2, the pre-mission auto-target
 # (0.75 N, 23.62 E). The nominal aims HERE and lands here with the planned
 # ~2-min hover margin — NOT at Tranquility Base (0.674 N, 23.473 E), where
@@ -178,8 +190,13 @@ ENABLE_ASPLANNED_SITE = True
 # overfly + fuel-critical touchdown is a DISPERSION (the fat-tailed manual
 # overfly gamma + the mascon downrange bias), not the nominal — making the
 # landing POINT consistent with the fuel side, which already targets the plan.
-SITE_TARGET_LAT_DEG = 0.75      # planned Landing Site 2, selenographic
-SITE_TARGET_LON_DEG = 23.62
+SITE_TARGET_LAT_DEG = float(os.environ.get("APOLLO_SITE_LAT", "0.75"))
+                                # planned Landing Site 2, selenographic; env-
+                                # overridable for alternate-site experiments
+                                # (e.g. Site 3 Sinus Medii 0.42,-1.33; Site 5
+                                # Oceanus Procellarum 1.67,-41.67). Unset =>
+                                # Site 2 => bit-identical.
+SITE_TARGET_LON_DEG = float(os.environ.get("APOLLO_SITE_LON", "23.62"))
 SITE_PLANE_EPOCH_S = 369_074.0  # PDI epoch (~102.5 h GET) — the site's inertial
                                 # direction at descent; the plane is ~inertially
                                 # fixed CA->PDI so evaluating the site here and
@@ -258,7 +275,148 @@ _MOON_B = [
     (4,0,0,-1,1021),(4,0,-1,1,833),
 ]
 
+# ------------------------------------------------------------------
+# JPL DE EPHEMERIS (reviewer request, 2026-09-05).
+# The analytic Meeus series below is a TRUNCATED expansion. Measured against
+# DE440 over the Apollo 11 mission span it runs 6-13.5 km off in 3-D position
+# (range error walking -2.9 km at launch to +10.3 km at entry) — larger than the
+# ~3.7 km a 2-arcsecond angular bound alone implies, because the truncation
+# carries a RANGE error the angular figure does not capture. The companion
+# Artemis project measured the same series 25-42 km off DE421 at its two lunar
+# flybys, and found it because a flyby altitude would not reproduce.
+#
+# FRAME. The Meeus routine returns MEAN EQUINOX OF DATE (it uses the obliquity
+# and ecliptic longitude of date), and the rest of the simulation is consistent
+# with that — _gmst_rad is an of-date quantity too. A DE kernel is ICRF (~J2000).
+# Comparing or substituting them raw introduces ~2,900 km of PRECESSION at the
+# 1969 epoch, which is a frame error, not an ephemeris improvement. The DE vector
+# is therefore rotated J2000 -> mean equinox of date before it is returned, so the
+# swap changes ONLY the ephemeris and leaves every frame convention alone.
+#
+# Env-gated and default OFF: with APOLLO_JPL_EPHEMERIS unset the analytic path is
+# untouched and every existing run reproduces bit-for-bit.
+ENABLE_JPL_EPHEMERIS = (os.environ.get("APOLLO_JPL_EPHEMERIS", "0") == "1")
+JPL_KERNEL_PATH = os.environ.get(
+    "APOLLO_JPL_KERNEL",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "ephemeris", "de440.bsp"))
+_JPL = "unset"
+
+
+def _jpl():
+    """(moon_seg, earth_seg, sun_seg) from the DE kernel, or None if unavailable.
+
+    Returns None rather than raising so an environment without jplephem or the
+    kernel degrades to the analytic series — but callers MUST report that, never
+    treat it as success (see check_ephemeris)."""
+    global _JPL
+    if _JPL == "unset":
+        try:
+            from jplephem.spk import SPK
+            _spk = SPK.open(JPL_KERNEL_PATH)
+            # Moon and Earth hang off the Earth-Moon barycentre (3); the Sun (10)
+            # off the solar-system barycentre (0), as does the EMB itself.
+            _JPL = (_spk, _spk[3, 301], _spk[3, 399], _spk[0, 10], _spk[0, 3])
+        except Exception as e:
+            # FAIL LOUDLY when the DE ephemeris was ASKED FOR and cannot be
+            # supplied. A silent fall-back to the analytic series is the exact
+            # failure the companion Artemis project ruled out: the fleet would
+            # fly the truncated series while every log line looked normal.
+            if ENABLE_JPL_EPHEMERIS:
+                raise RuntimeError(
+                    "APOLLO_JPL_EPHEMERIS=1 but the DE kernel could not be "
+                    "loaded from %r (%s). Refusing to fall back silently to the "
+                    "analytic Meeus series — install jplephem and point "
+                    "APOLLO_JPL_KERNEL at a DE .bsp, or unset "
+                    "APOLLO_JPL_EPHEMERIS to use the analytic path deliberately."
+                    % (JPL_KERNEL_PATH, e))
+            _JPL = None
+    return _JPL
+
+
+_PRECESS_MEMO = [None, None]
+
+
+def _precess_cached(T):
+    """Precession matrix with a one-entry memo.
+
+    The matrix was being rebuilt on EVERY ephemeris call (7.7 us each, three per
+    moon_state). It varies far too slowly to need that: at 50.29 arcsec/yr the
+    change over the 3.2 s memo granularity is 5e-5 arcsec = 0.01 m at lunar
+    distance. It does NOT vary slowly enough to hold fixed for a whole mission,
+    though — over 9 days it moves 1.24 arcsec = 2.3 km — so the key must track T,
+    not the run."""
+    key = round(T * 1.0e6)          # ~3.2 s of epoch per key
+    if _PRECESS_MEMO[0] != key:
+        _PRECESS_MEMO[0] = key
+        _PRECESS_MEMO[1] = _precess_j2000_to_date(T)
+    return _PRECESS_MEMO[1]
+
+
+def _moon_state_jpl(jde):
+    """Moon position AND velocity from the DE kernel in one pass, mean equinox of
+    date, [m, m/s].
+
+    Replaces three separate position calls (one for r, two for a central-
+    difference v). jplephem returns velocity directly in km/day. The precession
+    rate term dP/dt . r is dropped: at 7.7e-12 rad/s against a 4e8 m radius it is
+    3 mm/s on a ~1 km/s velocity (3e-6 relative), far below the ephemeris
+    difference this whole change is about."""
+    seg = _jpl()
+    if seg is None:
+        return None
+    _, moon, earth, _, _ = seg
+    rm, vm = moon.compute_and_differentiate(jde)
+    re, ve = earth.compute_and_differentiate(jde)
+    P = _precess_cached((jde - 2451545.0) / 36525.0)
+    r = P @ ((rm - re) * 1000.0)                 # km -> m
+    v = P @ ((vm - ve) * 1000.0 / 86400.0)       # km/day -> m/s
+    return r, v
+
+
+def _precess_j2000_to_date(T):
+    """IAU-1976 precession matrix, J2000 -> mean equinox of date (T centuries)."""
+    as2r = np.pi / (180.0 * 3600.0)
+    z1 = (2306.2181 * T + 0.30188 * T ** 2 + 0.017998 * T ** 3) * as2r
+    z2 = (2306.2181 * T + 1.09468 * T ** 2 + 0.018203 * T ** 3) * as2r
+    th = (2004.3109 * T - 0.42665 * T ** 2 - 0.041833 * T ** 3) * as2r
+    cz1, sz1 = np.cos(z1), np.sin(z1)
+    cz2, sz2 = np.cos(z2), np.sin(z2)
+    ct, stt = np.cos(th), np.sin(th)
+    Rz1 = np.array([[cz1, -sz1, 0.0], [sz1, cz1, 0.0], [0.0, 0.0, 1.0]])
+    Ry = np.array([[ct, 0.0, -stt], [0.0, 1.0, 0.0], [stt, 0.0, ct]])
+    Rz2 = np.array([[cz2, -sz2, 0.0], [sz2, cz2, 0.0], [0.0, 0.0, 1.0]])
+    return Rz2 @ Ry @ Rz1
+
+
+def _moon_eci_m_jpl(jde):
+    """Geocentric Moon position from the DE kernel, in the SAME frame the
+    analytic path returns (equatorial, mean equinox of date), METERS."""
+    seg = _jpl()
+    if seg is None:
+        return _moon_eci_m_meeus(jde)
+    _, moon, earth, _, _ = seg
+    r_j2000 = (moon.compute(jde) - earth.compute(jde)) * 1000.0
+    return _precess_cached((jde - 2451545.0) / 36525.0) @ r_j2000
+
+
+def _sun_eci_m_jpl(jde):
+    """Geocentric Sun position from the DE kernel, mean equinox of date, METERS."""
+    seg = _jpl()
+    if seg is None:
+        return _sun_eci_m_meeus(jde)
+    _, _, earth, sun, emb = seg
+    r_j2000 = (sun.compute(jde) - (emb.compute(jde) + earth.compute(jde))) * 1000.0
+    return _precess_cached((jde - 2451545.0) / 36525.0) @ r_j2000
+
+
 def _moon_eci_m(jde):
+    """Geocentric Moon position in ECI (equatorial, mean equinox), METERS."""
+    if ENABLE_JPL_EPHEMERIS:
+        return _moon_eci_m_jpl(jde)
+    return _moon_eci_m_meeus(jde)
+
+
+def _moon_eci_m_meeus(jde):
     """Geocentric Moon position in ECI (equatorial, mean equinox), METERS."""
     T = (jde - 2451545.0) / 36525.0
     d2r = np.deg2rad
@@ -297,6 +455,13 @@ _GMST0 = _gmst_rad(JD_LAUNCH) if ENABLE_REAL_EPHEMERIS else 0.0
 
 
 def _sun_eci_m(jde):
+    """Geocentric Sun position in ECI (equatorial, mean equinox), METERS."""
+    if ENABLE_JPL_EPHEMERIS:
+        return _sun_eci_m_jpl(jde)
+    return _sun_eci_m_meeus(jde)
+
+
+def _sun_eci_m_meeus(jde):
     """Geocentric Sun position in ECI (equatorial, mean equinox), METERS.
     Low-precision solar coordinates (Meeus ch.25, ~0.01 deg) — ample for the
     solar third-body tide (see ENABLE_SOLAR_GRAVITY)."""
@@ -733,7 +898,9 @@ LAUNCH_LON_DEG  = -80.604
 # meter for the ephemeris+GMST+ascent stack. (The preset cache fingerprint
 # includes the azimuth, so this change forces a re-solve automatically;
 # 72.48 lineages are reproducible from git history.)
-LAUNCH_AZIMUTH_DEG = 72.058
+LAUNCH_AZIMUTH_DEG = float(os.environ.get("APOLLO_LAUNCH_AZ_DEG", "72.058"))
+# (env override is for launch-window slots — see APOLLO_LAUNCH_DELAY_H; unset
+# => the as-flown 72.058, bit-identical.)
 
 # Feature flag: trans-Earth midcourse correction chain (MCC-5/6/7).
 # ON by default. phase_transearth_mcc is fully implemented: a per-opportunity
@@ -1015,7 +1182,11 @@ LOI1_PERI_TARGET_KM  = 111.12   # 60.0 nmi (Table 7-V)
 LOI1_APO_TARGET_KM   = 314.28   # 169.7 nmi
 LOI2_PERI_TARGET_KM  = 100.01   # 54 nmi (the PLANNED target, MSC-00171 §5)
 LOI2_APO_TARGET_KM   = 122.23   # 66 nmi
-LUNAR_DOI_GET_S      = 365_985.0  # DOI GET timed to LAND AT TRANQUILITY (Stage
+LUNAR_DOI_GET_S      = float(os.environ.get("APOLLO_DOI_GET_S", "365985.0") or 365985.0)
+                                  # env-overridable for the per-slot DOI-GET
+                                  # sweep (launch-window experiment); unset =>
+                                  # 365985.0 => bit-identical.
+                                  # DOI GET timed to LAND AT TRANQUILITY (Stage
                                   # 7b). The real DOI GET (101:36:14
                                   # = 365,774 s) was itself CHOSEN by RTCC so the
                                   # descent reached Site 2; our arrival-phase
@@ -1285,6 +1456,46 @@ SPE_CM_ATTENUATION = 0.90                # CM shelter attenuation (survivable ev
 SPE_MISSION_DURATION_DAYS = 8.0          # nominal exposure for the lambda→P conversion
 _SALT_SPE = 170017                       # entry-approach whole-mission occurrence draw
 _SALT_SPE_SURFACE = 170039               # surface-stay fatal draw (distinct/independent)
+# (7) S-IVB RESTART failure for translunar injection. The launch-phase
+#     `p_s_ivb_failure` Bernoulli is drawn ONCE and consumed only by the FIRST
+#     J-2 burn (parking-orbit insertion). The stage must then RESTART for TLI —
+#     and a failure to reignite is precisely what Apollo 6 suffered, the very
+#     event cited to justify the 0.5% rate. Without this draw the model cannot
+#     produce that failure at all. Same per-start rate as the first ignition;
+#     consequence is the most benign abort in the flight plan (a fully fuelled
+#     CSM in a nominal 185 km parking orbit → routine deorbit).
+#     RATE BASIS (revised): the earlier 5.0e-3 was inherited from the first-burn
+#     ignition figure and was not derived from the restart record at all, which
+#     made it inconsistent with how the other zero-failure rates in this model
+#     are set (the F-1 is rated ABOVE its 0-of-65 Jeffreys mean, deliberately
+#     conservative; this one sat an order of magnitude BELOW any reading of its
+#     own evidence). Restated on the record, conditioned on the Apollo 6 fix:
+#     that failure was traced to augmented-spark-igniter fuel lines rupturing
+#     under flow-induced vibration in vacuum, and the flexible bellows line was
+#     replaced with a rigid line from Apollo 8 onward; no J-2 failed again.
+#     Apollo 11 flew AFTER that fix, so the pooled program rate (1 failure in
+#     ~12 attempts, Jeffreys mean ~11%) is pessimistic for THIS vehicle. The
+#     post-fix record is 0 failures in 10 restarts (Apollo 8-17), giving a
+#     Jeffreys posterior Beta(0.5, 10.5) with mean 0.5/11 = 4.5e-2. Using the
+#     full post-fix program record (not only flights preceding Apollo 11) keeps
+#     the convention already used for PROB_SM_CATASTROPHIC (1/15, which counts
+#     Apollo 13) and PROB_DOCKING_FAILURE (2/21, spanning 1969-75).
+ENABLE_SIVB_RESTART_FAILURE = (os.environ.get("APOLLO_SIVB_RESTART", "0") == "1")
+S_IVB_RESTART_FAILURE_PROB  = 4.5e-2     # per TLI restart; Jeffreys on 0-of-10 post-fix restarts
+_SALT_SIVB_RESTART = 180043
+# (8) LM ASCENT-ENGINE (APS) ignition failure. The APS is the one engine on the
+#     mission with no redundancy, no abort and no rescue: a single pressure-fed
+#     hypergolic chamber that had to light with the moonwalkers already on the
+#     surface. The model charged the SPS 0.1% and the S-IVB 0.5% per start while
+#     giving the APS an implicit 100% start rate, so the mission's most
+#     safety-critical ignition was the only one that could not fail. Rated at the
+#     SPS's per-start figure: the two are the same class of engine (non-redundant,
+#     pressure-fed, hypergolic, no igniter) built to the same era's standards.
+#     Consequence is total for the LM crew — the Safire contingency — while the
+#     command module pilot returns alone.
+ENABLE_APS_IGNITION_FAILURE = (os.environ.get("APOLLO_APS_IGNITION", "0") == "1")
+APS_IGNITION_FAILURE_PROB   = 1.0e-3     # per commanded APS start; = SPS rate [ESTIMATE]
+_SALT_APS_IGNITION = 190483
 
 # ------------------------------------------------------------------
 # Surface operations failure modes — SOURCED (previously a pure time-advance).
@@ -1369,6 +1580,19 @@ LM_STAY_BATT_RATE_AHHR  = 1055.0 / 21.6
 # spawn). Estimate-grade (flagged): wind sigma, parachute/flotation rates.
 # ------------------------------------------------------------------
 ENABLE_APOLLO_ELS   = True    # master flag (default ON — under validation)
+ENABLE_SPLASH_WATER_CHECK = (os.environ.get("APOLLO_SPLASH_WATER_CHECK", "1") != "0")  # (#83)
+#   Default ON (adopted 2026-07-13); set APOLLO_SPLASH_WATER_CHECK=0 to force the
+#   legacy no-screen behavior (bit-identical). A splash coordinate on LAND (not
+#   ocean) is a recovery FAILURE: the Apollo CM was designed for water landing only
+#   (no landing retro-rockets), so a land impact = capsule not recovered intact and
+#   everyone aboard lost. Screen degrades gracefully to no-op if global-land-mask
+#   is unavailable (e.g. a venv without the package) — _is_land_splash returns False.
+#   (recovery_land_impact, 100% fatal — a conservative bound; no flown land-
+#   landing data exists to justify partial survival). Tested at the end of
+#   run_mission against the bundled global-land-mask grid (_is_land_splash).
+#   Extremely rare (grossly rev-slipped returns whose ground track rotates onto
+#   land). Env-gated so main_parallel workers inherit it; default OFF =
+#   bit-identical (and a no-op if global-land-mask is not installed).
 ELS_DROGUE_DEPLOY_M = 7315.0  # 24,000 ft — Apollo drogue deploy (NOT Orion 7600)
 ELS_MAIN_DEPLOY_M   = 3050.0  # ~10,000 ft — Apollo 3-main deploy (NOT Orion 2900)
 ELS_DROGUE_RATE_MS  = 56.0    # ~125 mph — drogue-phase descent rate (Apollo ELS)
@@ -1558,6 +1782,21 @@ APOLLO_ENTRY_VSUPER  = 7600.0   # m/s: constant-drag control active above this;
 # natural landing point when re-deriving the recovery target. None in production.
 ENTRY_PC_NEUTRAL_BANK = None
 
+ENABLE_USSA76_ENTRY = (os.environ.get("APOLLO_USSA76_ENTRY", "1") != "0")  # (peak-g
+#   fidelity) entry-phase air-density source, env-gated so main_parallel workers
+#   (spawn = fresh import) inherit it. Default ON (adopted 2026-07-13); set
+#   APOLLO_USSA76_ENTRY=0 to force the legacy 3-segment exponential atm_density
+#   (bit-identical regression path). When ON, _entry_density routes the
+#   entry-phase density calls (via _entry_density) through the sourced US Standard
+#   Atmosphere 1976 (_ussa76_rho_a, the same profile the ascent uses) below 86 km —
+#   where the entry deceleration peak (~50-60 km) sits — and the exponential above
+#   86 km (negligible drag; also sidesteps _ussa76_rho_a's own >=86 km fall-back to
+#   atm_density, so there is no recursion). The ascent atmosphere is untouched.
+#   Bit-identical when OFF. Rationale: at matched EI conditions (entry speed, FPA,
+#   L/D, ballistic coefficient all = Apollo) the exponential's crude scale height ran
+#   the nominal peak deceleration ~0.4 g high; USSA-76 brings it to ~6.5 g (Apollo's
+#   value). A force-model fidelity upgrade, not a fit to the target.
+
 # Authentic Saturn V ascent guidance: closed-loop linear-tangent steering
 # (Lawden's bilinear-tangent law, the core of MSFC's Iterative Guidance Mode)
 # for the S-IVB parking-orbit insertion, replacing the open-loop altitude-rate
@@ -1590,6 +1829,53 @@ ENABLE_IGM_ROBUST_ACCEPT = _nl_envflag("APOLLO_IGM_ROBUST")
 # already converge (the pinned laptop nominal) are bit-identical. Disable with
 # APOLLO_DISABLE_ROBUST_TEI_SEED=1 to reproduce the pre-fix single-shot behavior.
 ENABLE_ROBUST_TEI_SEED = not _nl_envflag("APOLLO_DISABLE_ROBUST_TEI_SEED")
+
+# TOF HOMOTOPY — last-resort recovery when BOTH the primary solve and the
+# multi-seed fallback above miss the robust branch. The fallback explores only
+# burn MAGNITUDE (960-1030 m/s) along the single min-energy graze DIRECTION, so
+# when the robust basin is not reachable along that one-parameter family it
+# returns zero valid roots and the nominal silently keeps the fragile branch.
+# Observed at the Aug-14 1969 opportunity: the primary reaches the corridor
+# (FPA -6.49) but 64.95 h TOF, and all five seeds yield 0 roots — even though a
+# 59.62 h / 1011.5 m/s return demonstrably exists there (the reference nominal),
+# from a trajectory differing by only 30 s of TEI ignition epoch and 38 km of
+# closest approach. That is a ROOT-SELECTION failure, not adverse geometry.
+# The fix walks the TOF TARGET from the value the solve actually reaches down
+# to the planned 59.6 h in warm-started steps, so each small target move keeps
+# the solve inside its basin of attraction — the same continuation technique
+# the trans-Earth MCC path already uses for large dispersions (see the "Robust
+# target HOMOTOPY" block). Engages ONLY after both earlier paths fail, so any
+# machine/epoch where they succeed is bit-identical. Disable with
+# APOLLO_DISABLE_TEI_TOF_HOMOTOPY=1.
+ENABLE_TEI_TOF_HOMOTOPY = not _nl_envflag("APOLLO_DISABLE_TEI_TOF_HOMOTOPY")
+
+# TEI REV-SLIP LEVER (env APOLLO_TEI_REV_SLIP=1, default OFF -> bit-identical).
+#
+# The model commits TEI to the FIRST opportunity, as Apollo did, and slips a rev
+# only when rev-1 cannot produce an in-corridor return. But Apollo's real
+# planning ran the other way as well: RTCC pre-planned a recovery zone for EVERY
+# TEI opportunity, and an opportunity whose zone fell somewhere the recovery
+# force could not work was not the one you took. Committing to rev-1 regardless
+# of where it puts the splash is therefore a MODELLING simplification, not the
+# flown procedure.
+#
+# It binds on the Jul-16 +4 h slot: that epoch's rev-1 return comes down at
+# 14.5 N, 131.3 E — the western Pacific off the Philippines, a dispersion band
+# that is 12.9% LAND against a 2% limit, which the Command Module does not
+# survive. Shifting the splash ~20 deg east drops that to 1.7%, and ~20 deg is
+# about one rev of Earth rotation.
+#
+# ON: rev-1 candidates are dropped from the TEI candidate set, so the solve
+# commits to the best LATER opportunity — the trans-Earth leg lengthens by
+# roughly a rev and the recovery zone rotates east. OFF: candidate set and
+# ordering are untouched, so every existing run reproduces bit-identically.
+#
+# This is a TIMELINE-vs-GEOGRAPHY trade, and it is not free: a slipped rev
+# costs mission-elapsed time against Apollo's 8.16 d and moves TEI off the
+# planned GET. Use it where the rev-1 zone is genuinely unusable, not to tidy
+# a marginal one.
+ENABLE_TEI_REV_SLIP = _nl_envflag("APOLLO_TEI_REV_SLIP")
+TEI_TOF_HOMOTOPY_STEPS  = 12      # continuation steps from achieved TOF -> 59.6 h
 
 
 class NominalBranchError(RuntimeError):
@@ -1683,6 +1969,178 @@ def check_nominal(nom, enforce=None, label="nominal"):
     return False
 
 
+# ------------------------------------------------------------------
+# RECOVERY-GEOGRAPHY GATE (2026-09-05, user-directed).
+# check_nominal above validates the return TRAJECTORY — coast, TEI dv, entry FPA
+# — but says NOTHING about where the capsule actually comes down. A nominal aimed
+# a short hop off a coastline therefore passes every gate we had and then loses a
+# large slice of the dispersed fleet on land, because the fleet's splash spread is
+# thousands of km wide while the aim margin is not.
+#
+# Measured on the Jul-23 slot: the same opportunity aimed 945 km out in the open
+# western Atlantic lost 4.4% of trials to land impact; aimed 167 km off Morocco it
+# lost 18.6% — a 10-point mission-success swing driven purely by the aim point.
+# Nothing flagged it: check_nominal passed, preflight passed, and the 25-trial gate
+# read 6 land impacts as plausible adverse-date behavior.
+#
+# Margins measured across the validated runs: definitive Jul-16 >4000 km, Jul-18
+# 1279, Jul-23-published 945, Jul-16+4h 834, Aug-14 723, Jul-23-rerun 167.
+# DISTANCE TO NEAREST LAND IS THE WRONG TEST, and this gate no longer uses it to
+# decide. Distance asks "how far is the closest rock?" when the question is "what
+# fraction of a fleet spread over tens of degrees comes down on land?" Those differ
+# whenever the nearest land is a small island: the Aug-14 nominal sits 625 km from
+# Hawaii and FAILED a 500-mile distance test, yet its 10,000-trial fleet lost 4 trials
+# to land impact (0.04%) — while Jul-23-published sat 945 km from Bermuda, PASSED, and
+# lost 4.4%. The distance test ranked those two backwards.
+#
+# So the gate integrates LAND FRACTION over the region the fleet actually reaches.
+# The dispersion is dominated by entry-timing spread, which moves the splash cloud in
+# LONGITUDE (the Jul-23 diagnosis measured the same 5,072 points scoring 0.8 / 1.8 /
+# 18.6 / 42.2 / 48.3 % land under longitude translations of -30/-10/0/+10/+30 deg), so
+# the region is a band: +/-30 deg of longitude by +/-10 deg of latitude, area-weighted.
+#
+# CALIBRATION against runs whose fleet land-impact rate is known:
+#     case                observed   band fraction
+#     definitive Jul-16     0.00%        0.13%
+#     Aug-14                0.04%        0.12%
+#     Jul-23 published      4.40%       13.49%
+#     Jul-23 Meeus re-run  18.60%       78.42%
+# The band fraction over-reads the realized rate by roughly 3x (it ignores that the
+# cloud is denser near its aim point), but it ORDERS the cases correctly and separates
+# safe from unsafe by two orders of magnitude. A 2% threshold sits in that gap with
+# ~15x margin below and ~6x above, so the verdict is not sensitive to its exact value.
+NOMINAL_SPLASH_LAND_FRACTION_PCT = 2.0
+SPLASH_DISPERSION_DLON_DEG = 30.0
+SPLASH_DISPERSION_DLAT_DEG = 10.0
+NOMINAL_SPLASH_LAND_MARGIN_KM = 804.672      # 500 mi; REPORTED as context, not gated on
+ALLOW_COASTAL_SPLASH = _nl_envflag("APOLLO_ALLOW_COASTAL_SPLASH")
+
+
+class CoastalSplashError(RuntimeError):
+    """The nominal splashes closer to land than the recovery margin allows."""
+
+
+def _nearest_land_km(lat, lon, max_km=None):
+    """Great-circle distance from (lat, lon) to the nearest land, capped at max_km.
+
+    Returns None when the land mask is unavailable — the caller must then SAY the
+    check could not run rather than treat it as a pass. Searches outward in rings,
+    so cost scales with the answer rather than with the cap.
+    """
+    import math                      # module-local, as elsewhere in this file
+    global _LANDMASK
+    if max_km is None:
+        max_km = NOMINAL_SPLASH_LAND_MARGIN_KM * 1.25
+    if _LANDMASK == "unset":
+        try:
+            from global_land_mask import globe as _g
+            _LANDMASK = _g
+        except Exception:
+            _LANDMASK = None
+    if _LANDMASK is None:
+        return None
+    lon = ((float(lon) + 180.0) % 360.0) - 180.0
+    lat = float(lat)
+    if bool(_LANDMASK.is_land(lat, lon)):
+        return 0.0
+    R_KM = 6371.0
+    brg = np.radians(np.arange(0.0, 360.0, 3.0))
+    p1, l1 = math.radians(lat), math.radians(lon)
+    d = 25.0
+    while d <= max_km:
+        ang = d / R_KM
+        p2 = np.arcsin(math.sin(p1) * np.cos(ang)
+                       + math.cos(p1) * np.sin(ang) * np.cos(brg))
+        l2 = l1 + np.arctan2(np.sin(brg) * np.sin(ang) * math.cos(p1),
+                             np.cos(ang) - math.sin(p1) * np.sin(p2))
+        la = np.degrees(p2)
+        lo = ((np.degrees(l2) + 180.0) % 360.0) - 180.0
+        keep = np.abs(la) <= 90.0
+        if np.any(keep) and bool(np.any(_LANDMASK.is_land(la[keep], lo[keep]))):
+            return float(d)
+        d += 25.0
+    return float(max_km)
+
+
+def _land_fraction_pct(lat, lon, dlat=None, dlon=None, n=200):
+    """Area-weighted percentage of LAND in the dispersion band around a splash point.
+
+    This is the quantity the recovery gate actually cares about: what share of a
+    fleet whose splash cloud spans tens of degrees of longitude comes down on land.
+    Returns None when the land mask is unavailable, so the caller can say the check
+    did not run rather than silently pass it.
+    """
+    global _LANDMASK
+    if dlat is None:
+        dlat = SPLASH_DISPERSION_DLAT_DEG
+    if dlon is None:
+        dlon = SPLASH_DISPERSION_DLON_DEG
+    if _LANDMASK == "unset":
+        try:
+            from global_land_mask import globe as _g
+            _LANDMASK = _g
+        except Exception:
+            _LANDMASK = None
+    if _LANDMASK is None:
+        return None
+    la = np.linspace(float(lat) - dlat, float(lat) + dlat, n)
+    lo = np.linspace(float(lon) - dlon, float(lon) + dlon, n)
+    LA, LO = np.meshgrid(la, lo)
+    LA = np.clip(LA, -89.9, 89.9)
+    LO = ((LO + 180.0) % 360.0) - 180.0
+    w = np.cos(np.deg2rad(LA))          # equal-area weighting of the lat/lon grid
+    return float(100.0 * (_LANDMASK.is_land(LA, LO) * w).sum() / w.sum())
+
+
+def check_splash_margin(nom, enforce=None, label="nominal"):
+    """Gate a nominal on RECOVERY GEOGRAPHY. Returns True on pass.
+
+    DELIBERATELY SEPARATE from check_nominal, with its own override. An
+    adverse-date run legitimately needs APOLLO_SKIP_NOMINAL_CHECK=1 to get past the
+    fragile-TEI-branch gate, and that must NOT also silence this one — the Jul-23
+    re-run is exactly that case: a legitimate off-branch nominal with an
+    illegitimate aim point.
+
+    Authorize a coastal nominal deliberately with APOLLO_ALLOW_COASTAL_SPLASH=1.
+    """
+    if enforce is None:
+        enforce = not ALLOW_COASTAL_SPLASH
+    lat, lon = nom.get("splash_lat"), nom.get("splash_lon")
+    if lat is None or lon is None:
+        return True
+    frac = _land_fraction_pct(lat, lon)
+    if frac is None:
+        print("  check_splash_margin[%s]: SKIPPED — global-land-mask unavailable, "
+              "so the nominal's recovery geography was NOT verified." % label)
+        return True
+    margin = _nearest_land_km(lat, lon)          # context only; not the criterion
+    _ctx = ("nearest land %.0f km" % margin) if margin is not None else "nearest land n/a"
+    if frac < NOMINAL_SPLASH_LAND_FRACTION_PCT:
+        print("  check_splash_margin[%s]: OK (splash %.2f, %.2f — %.2f%% land in the "
+              "+/-%.0f lon x +/-%.0f lat dispersion band, limit %.1f%%; %s)"
+              % (label, lat, lon, frac, SPLASH_DISPERSION_DLON_DEG,
+                 SPLASH_DISPERSION_DLAT_DEG, NOMINAL_SPLASH_LAND_FRACTION_PCT, _ctx))
+        return True
+    msg = ("check_splash_margin[%s] FAILED — %.2f%% of the nominal's dispersion band is "
+           "LAND, above the %.1f%% limit:\n"
+           "  - splash point %.3f, %.3f  (%s)\n"
+           "  - band searched: +/-%.0f deg longitude x +/-%.0f deg latitude, area-weighted\n"
+           "WHY THIS MATTERS: the fleet's splash cloud spans tens of degrees of longitude, "
+           "so what matters is the LAND FRACTION it covers, not the distance to the nearest "
+           "rock. Calibration: 0.12%% band fraction gave 0.04%% fleet land impacts (Aug-14); "
+           "13.49%% gave 4.4%% (Jul-23 published); 78.42%% gave 18.6%% (Jul-23 re-run). The "
+           "Command Module is a water lander and does not survive a land impact.\n"
+           "REMEDY: re-aim the return (TEI timing) so the cloud sits over open ocean, or pin "
+           "a nominal that already does. If this aim is DELIBERATE and the land-impact rate "
+           "is itself the finding, authorize it explicitly with APOLLO_ALLOW_COASTAL_SPLASH=1."
+           % (label, frac, NOMINAL_SPLASH_LAND_FRACTION_PCT, lat, lon, _ctx,
+              SPLASH_DISPERSION_DLON_DEG, SPLASH_DISPERSION_DLAT_DEG))
+    if enforce:
+        raise CoastalSplashError(msg)
+    print("WARNING: " + msg)
+    return False
+
+
 # ============================================================
 # Physics
 # ============================================================
@@ -1692,6 +2150,13 @@ def moon_state(t):
         # UTC -> TT for the Meeus series time argument (GMST stays on UT).
         tt = t + (DELTA_T_S if ENABLE_EPHEM_DELTA_T else 0.0)
         jde = JD_LAUNCH + tt / 86400.0
+        if ENABLE_JPL_EPHEMERIS:
+            # One pass for r AND v -- the kernel differentiates its own Chebyshev
+            # polynomials, so the central difference below (three position calls)
+            # is pure waste on this path.
+            rv = _moon_state_jpl(jde)
+            if rv is not None:
+                return rv
         r = _moon_eci_m(jde)
         dt = 60.0  # s; velocity by central difference (Moon moves ~13 deg/day)
         v = (_moon_eci_m(JD_LAUNCH + (tt + dt) / 86400.0)
@@ -1973,19 +2438,29 @@ def _lunar_sh_accel_body(x, y, z):
 
 
 def lunar_nonspherical_accel(p, t):
-    """Perturbing acceleration (m/s^2) from the Moon's degree-2 figure (C20,
-    C22) at Moon-relative position `p` (ECI-aligned, Moon-centered), at time t.
+    """Perturbing acceleration (m/s^2) from the Moon's non-spherical figure at
+    Moon-relative position `p` (ECI-aligned, Moon-centered), at time t.
 
     Returns ONLY the perturbation to be added on top of the -MU_MOON*p/|p|^3
-    central term. Negligible far from the Moon (it falls as 1/r^4), so it is
-    applied only in the Moon-centered phases (lunar orbit, descent, ascent).
+    central term. Negligible far from the Moon, so it is applied only in the
+    Moon-centered phases (lunar orbit, descent, ascent).
 
-    Implementation: build the lunar body frame (spin axis ~ Moon orbital
+    THREE RANGE TIERS (verified by test_verification.py):
+      r > 50,000 km    zero (early-out; below integrator tolerance)
+      r < 3,500 km     full degree-8 GRGM1200A field via the Cunningham V/W
+                       recursion, when ENABLE_LUNAR_SH_FIELD is set
+      otherwise        legacy degree-2 closed form (C20 + C22), which is also
+                       the ENABLE_LUNAR_SH_FIELD-OFF path at all ranges
+    So the falloff is 1/r^4 only in the degree-2 tier; inside 3,500 km the
+    higher degrees steepen it (measured exponent 3.31 at r = 2,000 km).
+
+    Implementation: build the lunar body frame -- IAU-2009 true pole and prime
+    meridian with physical librations when ENABLE_LUNAR_LIBRATION is set,
+    otherwise a tidal-lock approximation (spin axis ~ Moon orbital
     angular-momentum direction; long/x-axis ~ the Moon->Earth direction in the
-    equatorial plane, since the Moon is tidally locked with its long axis toward
-    Earth), evaluate the closed-form C20 and C22 accelerations in that frame,
-    and rotate back to ECI. Assumptions (stated for honesty): lunar obliquity to
-    its orbit (~1.5 deg) is neglected, and the long axis is taken exactly toward
+    equatorial plane) -- evaluate the field in that frame, and rotate back to
+    ECI. Assumption of the legacy frame, stated for honesty: lunar obliquity to
+    its orbit (~1.5 deg) is neglected and the long axis is taken exactly toward
     Earth; both are good approximations at this model's fidelity.
     """
     if not globals().get("ENABLE_LUNAR_HARMONICS", False):
@@ -2088,6 +2563,18 @@ def _ussa76_rho_a(h_m):
                 p = pb * (Tb / T) ** (G0 / (_R_AIR * L))
             return p / (_R_AIR * T), np.sqrt(1.4 * _R_AIR * T)
     return 1.225, 340.3   # unreachable
+
+
+def _entry_density(alt):
+    """Entry-phase air density [kg/m^3]. Default (flag OFF): the legacy 3-segment
+    exponential atm_density. With ENABLE_USSA76_ENTRY set: the sourced USSA-76
+    profile (_ussa76_rho_a, as the ascent uses) below 86 km — where the entry
+    deceleration peak (~50-60 km) sits — and the exponential above 86 km (negligible
+    drag; also avoids _ussa76_rho_a's own >=86 km fall-back to atm_density, so no
+    recursion). Bit-identical to atm_density when OFF."""
+    if ENABLE_USSA76_ENTRY and alt < 86_000.0:
+        return _ussa76_rho_a(alt)[0]
+    return atm_density(alt)
 
 
 _SATV_CD_M = (np.array([m for m, _ in _SATV_CD_MACH]),
@@ -2490,6 +2977,13 @@ if ENABLE_LAUNCH_CONTINUITY and ENABLE_REAL_EPHEMERIS:
     # 177.18) before that.
     SPLASH_TARGET_LAT_DEG = 13.379
     SPLASH_TARGET_LON_DEG = -169.845
+    # Launch-window slot experiments re-aim the recovery zone to the slot's own
+    # nominal splash (per-slot targeting load, like DOI-GET/azimuth). Unset =>
+    # production zone => bit-identical.
+    if os.environ.get("APOLLO_SPLASH_LAT"):
+        SPLASH_TARGET_LAT_DEG = float(os.environ["APOLLO_SPLASH_LAT"])
+    if os.environ.get("APOLLO_SPLASH_LON"):
+        SPLASH_TARGET_LON_DEG = float(os.environ["APOLLO_SPLASH_LON"])
 
 _CACHED_LAUNCH_TLI = None   # (t_ign_angle_deg, vcut_ms) nominal guidance preset
 # Matched-pair reference for the preset: the preset steering solution is exact
@@ -2788,9 +3282,28 @@ def _preset_fingerprint():
 
 
 def _preset_path():
-    """Absolute path of the disk-cached launch/TLI preset (module-local)."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "launch_tli_preset.json")
+    """Absolute path of the disk-cached launch/TLI preset (module-local).
+    Launch-window slots (APOLLO_LAUNCH_DELAY_H != 0) get their own file so a
+    slot experiment can never clobber the production preset."""
+    # Optional per-start tag so a PARALLEL multi-start preset search (different
+    # T_arr / seeds) writes distinct cache files instead of racing on one.
+    # Unset => no tag => production path unchanged.
+    #
+    # The tag applies to the delay-0 branch TOO. It previously did not, which
+    # meant every delay-0 configuration collided on the single production
+    # filename: a flight-anchored run (azimuth 72.058) and the definitive
+    # from-scratch run (72.465) have different fingerprints, so each one
+    # re-solved (~23 min) and OVERWROTE the other's preset. That is the
+    # stale-preset trap in its most damaging form, because a re-solve moves the
+    # hypersensitive arrival phase and therefore the landing site. Tagging the
+    # delay-0 name lets the two coexist:
+    #     APOLLO_TLI_PRESET_TAG=_flightanchored -> launch_tli_preset_flightanchored.json
+    # Unset still resolves to launch_tli_preset.json, so the production preset
+    # keeps its filename and nothing needs migrating.
+    _tag = os.environ.get("APOLLO_TLI_PRESET_TAG", "")
+    name = (f"launch_tli_preset{_tag}.json" if _LAUNCH_DELAY_H == 0.0 else
+            f"launch_tli_preset_delay{_LAUNCH_DELAY_H:g}h{_tag}.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
 
 
 def _solve_launch_tli():
@@ -2855,7 +3368,10 @@ def _solve_launch_tli():
     #    (periselene -> ~110 km). The B-plane MCC chain + MCC-4b trim the
     #    per-trial residual downstream.
     from scipy.optimize import brentq
-    T_arr = 9856.0 + 73 * 3600.0
+    # Arrival-coast target (h). Env-overridable so a parallel multi-start can
+    # explore the arrival-phase basins (the #5/#7c hypersensitive manifold);
+    # unset => 73 h => bit-identical.
+    T_arr = 9856.0 + float(os.environ.get("APOLLO_TLI_TARR_H", "73")) * 3600.0
     _warm = [10_905.0]
 
     def phased_peri(ang):
@@ -6012,7 +6528,7 @@ def _predict_peak_g_liftup(r, v_eci, m, max_time_s=120.0, dt=2.0,
         vmag = np.linalg.norm(v)
         if vmag < 1.0:
             break
-        rho = atm_density(alt)
+        rho = _entry_density(alt)
         q = 0.5 * rho * vmag**2
         drag_g = q * cd_a / m / G0
         if drag_g > peak_g:
@@ -6146,7 +6662,7 @@ def phase_entry(state, t0, perturb=None,
         v_air = np.cross(omega_e_vec, r)
         v_rel = v_eci - v_air
         v_rel_mag = np.linalg.norm(v_rel)
-        rho = atm_density(alt)
+        rho = _entry_density(alt)
         q = 0.5 * rho * v_rel_mag**2
         if v_rel_mag < 1 or rho < 1e-10:
             return np.zeros(3), np.zeros(3), q, v_rel
@@ -6232,7 +6748,7 @@ def phase_entry(state, t0, perturb=None,
                 if vrel_n <= vswitch:
                     bk = bank2_deg
                 elif drag_ref is not None:
-                    rho_p = atm_density(rn - R_EARTH)
+                    rho_p = _entry_density(rn - R_EARTH)
                     dg = 0.5 * rho_p * vrel_n**2 * cd_a / m0 / G0
                     if (peak_g_pred[0] > drag_ref * 1.05
                             and dg < peak_g_pred[0] * 0.98):
@@ -6468,7 +6984,7 @@ def phase_entry(state, t0, perturb=None,
         v_air = np.cross(omega_e_vec, r)
         v_rel = v_eci - v_air
         v_rel_mag = np.linalg.norm(v_rel)
-        rho = atm_density(alt)
+        rho = _entry_density(alt)
         q = 0.5 * rho * v_rel_mag**2
         a_drag = q * cd_a / m / G0   # drag accel in g
         v_radial = np.dot(v_eci, r/rn)
@@ -6792,7 +7308,7 @@ def phase_entry(state, t0, perturb=None,
         # Track g/q
         v_air = np.cross(omega_e_vec, r)
         v_rel_mag = np.linalg.norm(v_eci - v_air)
-        rho = atm_density(alt)
+        rho = _entry_density(alt)
         q = 0.5 * rho * v_rel_mag**2
         max_q[0] = max(max_q[0], q)
         # Track max_g only during the entry deceleration regime (above 12 km,
@@ -7022,6 +7538,28 @@ def _surface_ops(t, perturb, results, mark):
     # reconciliation is deferred (cosmetic; the LM ledger still uses the true
     # stay hours via SURFACE_STAY_S).
     return t + 21.6 * 3600
+
+
+_LANDMASK = "unset"
+def _is_land_splash(lat, lon):
+    """True if (lat, lon) is on LAND rather than ocean, via the bundled
+    global-land-mask grid (lazily imported + cached). Returns False if the
+    package is unavailable, so the sim never hard-depends on it. Longitude is
+    wrapped to [-180, 180] for the mask."""
+    global _LANDMASK
+    if _LANDMASK == "unset":
+        try:
+            from global_land_mask import globe as _g
+            _LANDMASK = _g
+        except Exception:
+            _LANDMASK = None
+    if _LANDMASK is None:
+        return False
+    try:
+        _lon = ((float(lon) + 180.0) % 360.0) - 180.0
+        return bool(_LANDMASK.is_land(float(lat), _lon))
+    except Exception:
+        return False
 
 
 def _splashdown_recovery(lat, lon, splash_t, perturb, results, mark):
@@ -7282,6 +7820,27 @@ def _fly_cfp_rendezvous(r_lm0, v_lm0, r_cs0, v_cs0, perturb, t0):
         return {"fallback": True}
 
 
+RUN_CONFIG_FILE = "run_config.json"
+
+
+def run_config():
+    """The resolved, outcome-affecting configuration of THIS process.
+
+    Every ENABLE_* flag plus the env-driven scalars that move the trajectory.
+    Written next to a pinned nominal by cluster_run setup and re-checked by
+    preflight, because these are read from the environment AT IMPORT: a shard
+    launched with an incomplete env prefix silently flies different physics and
+    the only evidence is a changed failure decomposition after the fact. Built by
+    reflection so a newly added flag is covered without editing this function."""
+    cfg = {k: v for k, v in sorted(globals().items())
+           if k.startswith("ENABLE_") and isinstance(v, (bool, int, float, str))}
+    for k in ("LAUNCH_AZIMUTH_DEG", "SITE_TARGET_LAT_DEG", "SITE_TARGET_LON_DEG",
+              "_LAUNCH_DELAY_H", "TLI_TRANSFER_ANGLE_DEG"):
+        if k in globals():
+            cfg[k] = globals()[k]
+    return cfg
+
+
 def _hazard_hit(prob, salt, t, state):
     """Phase-local NUMERIC-salt Bernoulli for a new default-OFF hazard: True with
     probability `prob`, from a stream salted by (t, state, salt) so it is deterministic
@@ -7385,6 +7944,19 @@ def run_mission(perturb=None, capture_trajectories=False):
     #    (in real Apollo this would be computed by the IU from telemetry;
     #    our Lambert+3body refinement gives the same answer for nominal
     #    geometry).
+    # S-IVB RESTART for TLI. Drawn from a phase-local numeric-salt stream via
+    # _hazard_hit, so the main per-trial RNG sequence is untouched: with the flag
+    # OFF nothing is drawn (bit-identical), and with it ON every trial is
+    # unchanged EXCEPT the ones this mode claims — so the delta is attributable
+    # to the mode alone rather than to a reshuffled fleet. Skipped for the
+    # nominal, like every other hazard.
+    if (globals().get("ENABLE_SIVB_RESTART_FAILURE", False) and perturb
+            and _hazard_hit(S_IVB_RESTART_FAILURE_PROB, _SALT_SIVB_RESTART,
+                            launch["t_insertion"], launch["state"])):
+        results["full_success"] = False
+        results["mission_failure"] = "tli_s_ivb_restart_failure"
+        return results, trajectories
+
     if globals().get("ENABLE_LAUNCH_CONTINUITY", False):
         # Launch-state continuity: TLI ignites from THIS TRIAL'S launched
         # parking orbit (launch dispersions flow physically into the transfer;
@@ -8176,6 +8748,18 @@ def run_mission(perturb=None, capture_trajectories=False):
         h_csm = np.cross(r_cs_asc, v_cs_asc)
         csm_plane_normal = h_csm / np.linalg.norm(h_csm)
 
+        # APS ignition. Drawn from a phase-local salted stream (see _hazard_hit),
+        # so the main per-trial RNG sequence is untouched and the OFF path is
+        # bit-identical. Skipped for the nominal, like every other hazard. The
+        # label routes to the existing ascent_engine_failure survival class:
+        # both moonwalkers lost, the command module pilot returns alone.
+        if (globals().get("ENABLE_APS_IGNITION_FAILURE", False) and perturb
+                and _hazard_hit(APS_IGNITION_FAILURE_PROB, _SALT_APS_IGNITION,
+                                t, csm_asc)):
+            results["full_success"] = False
+            results["mission_failure"] = "ascent_engine_failure"
+            return results, trajectories
+
         asc = phase_ascent_burn(t, perturb, csm_plane_normal=csm_plane_normal)
         results["ascent_success"]        = asc["success"]
         results["ascent_alt_km"]         = asc["final_alt_km"]
@@ -8538,7 +9122,16 @@ def run_mission(perturb=None, capture_trajectories=False):
         print("  TEI-scan dbg: local maxima (GET h, align): {}".format(
             [(round(scan_t[i] / 3600.0, 2), round(float(alignments[i]), 3))
              for i in _pk_all[:24]]), flush=True)
-    align_peaks = _rev1[:3] + _later[:3]
+    if globals().get("ENABLE_TEI_REV_SLIP", False) and _later:
+        # REV-SLIP FORCED (see ENABLE_TEI_REV_SLIP): drop the rev-1 candidates so
+        # the solve commits to a later opportunity, rotating the recovery zone
+        # east. Guarded on `_later` being non-empty — with no later candidate to
+        # fall back on, dropping rev-1 would leave nothing and the "no peaks"
+        # branch below would pick a raw argmax, which is worse than simply
+        # honouring rev-1. Bit-identical when the flag is off.
+        align_peaks = _later[:3]
+    else:
+        align_peaks = _rev1[:3] + _later[:3]
 
     if not align_peaks:
         # No high-quality alignment peaks — use absolute best
@@ -9112,6 +9705,47 @@ def run_mission(perturb=None, capture_trajectories=False):
                             flush=True)
                     if _cands:
                         best_sim = min(_cands, key=lambda s: s["dv_mag"])
+                    elif globals().get("ENABLE_TEI_TOF_HOMOTOPY", True):
+                        # LAST RESORT: TOF CONTINUATION. The seeds above vary
+                        # only magnitude along the graze direction; when that
+                        # one-parameter family misses the robust basin we walk
+                        # the TOF TARGET instead, from whatever the solve
+                        # actually reaches down to the planned 59.6 h, warm-
+                        # starting each step so no single move leaves the basin.
+                        _xh = dv0 if _sol_t is None else _sol_t.x
+                        _sh_cur = _s_tof if _s_tof is not None else best_sim
+                        _tof_now = (float(_sh_cur["entry_t"] - t_tei)
+                                    if _sh_cur is not None else _TOF_TGT)
+                        _n = max(1, int(TEI_TOF_HOMOTOPY_STEPS))
+                        for _i in range(1, _n + 1):
+                            _tgt = _tof_now + (_TOF_TGT - _tof_now) * (_i / _n)
+                            try:
+                                _sh = least_squares(
+                                    _resid_tof_to, _xh, args=(_tgt,),
+                                    method='trf', x_scale='jac', ftol=1e-12,
+                                    xtol=1e-12, gtol=1e-12, diff_step=1e-4,
+                                    max_nfev=200)
+                            except Exception:
+                                break
+                            _mh = simulate_burn_vec(_sh.x)
+                            if _mh is None:      # step left the entry manifold
+                                break
+                            _xh, _sh_cur = _sh.x, _mh
+                        # Accept ONLY through the same gate as every other path.
+                        _ok_h = (_sh_cur is not None
+                                 and abs(_sh_cur["entry_fpa_deg"] + 6.5) < 0.3
+                                 and abs((_sh_cur["entry_t"] - t_tei) - _TOF_TGT)
+                                     < 0.5 * 3600.0)
+                        if globals().get("_TEI_DEBUG"):
+                            print("  TOF homotopy: %d steps %.2f h -> %.2f h, "
+                                  "dv=%.1f accepted=%s" % (
+                                      _n, _tof_now / 3600.0,
+                                      ((_sh_cur["entry_t"] - t_tei) / 3600.0)
+                                      if _sh_cur is not None else float('nan'),
+                                      _sh_cur["dv_mag"] if _sh_cur is not None
+                                      else float('nan'), _ok_h), flush=True)
+                        if _ok_h:
+                            best_sim = _sh_cur
             # NOMINAL: capture the entry target from the finite-thrust result.
             # (Capture ONLY from a nominal run, so a perturbed trial can never
             # corrupt the target with an off-nominal landing point.)
@@ -9617,6 +10251,14 @@ def run_mission(perturb=None, capture_trajectories=False):
         a_hav = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
         c_hav = 2*np.arcsin(np.sqrt(min(1.0, a_hav)))
         results["splash_miss_km"] = R_EARTH/1000.0 * c_hav
+        # Splash-in-water check: a splash on land (not ocean) is a recovery
+        # failure — the water-only CM is not recovered intact and everyone
+        # aboard is lost. Terminal (last event), no cascade. OFF => bit-identical.
+        if ENABLE_SPLASH_WATER_CHECK and _is_land_splash(_sl, _so):
+            results["splash_on_land"] = True
+            results["mission_failure"] = "recovery_land_impact"
+            results["full_success"] = False
+            return results, trajectories
     else:
         # Entry failed: too steep, breakup, or skipped out
         # 12g = Apollo undershoot/structural boundary (NASA TN D-6725).
@@ -9948,7 +10590,9 @@ def main(n=1000,
     except (OSError, ValueError):
         _nomchk = None
     if _nomchk is not None:
-        check_nominal(_nomchk, label=os.path.basename(os.path.normpath(outdir)))
+        _lbl = os.path.basename(os.path.normpath(outdir))
+        check_nominal(_nomchk, label=_lbl)
+        check_splash_margin(_nomchk, label=_lbl)
 
     # Persist the captured entry target so resume batches load it instead of
     # re-running the nominal to recapture it.
@@ -10225,7 +10869,9 @@ def main_parallel(n=1000,
     except (OSError, ValueError):
         _nomchk = None
     if _nomchk is not None:
-        check_nominal(_nomchk, label=os.path.basename(os.path.normpath(outdir)))
+        _lbl = os.path.basename(os.path.normpath(outdir))
+        check_nominal(_nomchk, label=_lbl)
+        check_splash_margin(_nomchk, label=_lbl)
 
     # --- persist targets so resume batches skip re-running nominal ----------
     if (globals().get("ENABLE_TEI_TARGETING", False)

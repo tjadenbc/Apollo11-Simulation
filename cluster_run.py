@@ -45,6 +45,12 @@ def do_setup(outdir, n, seed):
         p = os.path.join(outdir, f)
         if not os.path.exists(p):
             print(f"WARNING: setup did not produce {f}")
+    # Record the configuration this nominal was derived under, so preflight can
+    # refuse a later run whose env prefix resolves to different physics.
+    import json
+    with open(os.path.join(outdir, apollo11.RUN_CONFIG_FILE), "w") as fh:
+        json.dump(apollo11.run_config(), fh, indent=1, sort_keys=True)
+    print(f"wrote {apollo11.RUN_CONFIG_FILE} ({len(apollo11.run_config())} settings)")
     print("setup complete")
 
 
@@ -145,7 +151,41 @@ def do_preflight(outdir):
         apollo11.check_nominal(nom, enforce=True, label=outdir)
     except apollo11.NominalBranchError as e:
         print("PREFLIGHT_BADBRANCH " + str(e).splitlines()[0])
-        sys.exit(3)
+        # An off-branch nominal is normally a SOLVER MISS and must never fly:
+        # it costs ~11 points of success (77% vs 88%) while looking like a
+        # legitimate result. The one legitimate exception is a deliberately
+        # ADVERSE-DATE run where the fragile branch IS the finding. Verified for
+        # Jul-23 (2026-09-05): the TOF homotopy that recovers Aug-14's robust
+        # branch in 12 steps stalls at 71.94 h (12 steps) / 71.91 h (48 steps)
+        # there — a genuine barrier, already spending Apollo's full 1008 m/s TEI
+        # budget — so 59.6 h is unreachable at that epoch, not merely unfound.
+        print("  This is normally a solver miss and must NOT fly. The one "
+              "legitimate exception is a deliberately adverse-date run whose "
+              "fragile branch IS the result (e.g. Jul-23 — see "
+              "launch_window_slots.md). Set ALLOW_OFFBRANCH=1 to proceed "
+              "deliberately.")
+        if os.environ.get("ALLOW_OFFBRANCH", "0") != "1":
+            sys.exit(3)
+        print("  ALLOW_OFFBRANCH=1 — proceeding on the fragile branch "
+              "deliberately.")
+
+    # RECOVERY-GEOGRAPHY GATE. Separate from the branch gate above and separately
+    # overridden: an adverse-date run legitimately needs ALLOW_OFFBRANCH for its
+    # fragile TEI branch, and that must not also wave through a nominal aimed at a
+    # coastline. A coastal aim costs a large slice of the fleet to land impact
+    # (Jul-23: 4.4% at 945 km of margin, 18.6% at 167 km).
+    try:
+        apollo11.check_splash_margin(nom, enforce=True, label=outdir)
+    except apollo11.CoastalSplashError as e:
+        print("PREFLIGHT_COASTAL_SPLASH " + str(e).splitlines()[0])
+        print("  Re-aim the return so the recovery point sits in open ocean, or "
+              "set APOLLO_ALLOW_COASTAL_SPLASH=1 to authorize this aim "
+              "deliberately (the land-impact rate then becomes a reported finding, "
+              "not an accident).")
+        if os.environ.get("APOLLO_ALLOW_COASTAL_SPLASH", "0") != "1":
+            sys.exit(6)
+        print("  APOLLO_ALLOW_COASTAL_SPLASH=1 — proceeding with a coastal aim "
+              "deliberately.")
     # The steered-TLI-cutoff preset is part of the nominal's identity: it is
     # loaded from NEXT TO apollo11.py (not the outdir), and if missing or
     # fingerprint-mismatched every worker would silently RE-SOLVE it on the
@@ -166,7 +206,43 @@ def do_preflight(outdir):
                   f"the TLI preset (arrival-phase / landing-site risk); "
                   f"sync the validated launch_tli_preset.json first")
             sys.exit(4)
-    print("PREFLIGHT_OK (pinned nominal present + robust branch: "
+    # CONFIG GUARD. The flags above are read from the environment at import, so a
+    # run submitted with an incomplete APOLLO_ENV_PREFIX resolves to different
+    # physics while every file-presence check still passes. That happened on
+    # 2026-09-03: a 10,000-trial run went the whole way with the six 1969-hazard
+    # modes and the robust-ignition acceptance OFF, and the only symptom was a
+    # changed failure decomposition discovered afterwards. Compare this process's
+    # resolved config against the one the pinned nominal was derived under.
+    cfg_path = os.path.join(outdir, apollo11.RUN_CONFIG_FILE)
+    here = apollo11.run_config()
+    if os.path.exists(cfg_path):
+        with open(cfg_path) as f:
+            pinned = json.load(f)
+        diffs = [(k, pinned.get(k, "<absent>"), here.get(k, "<absent>"))
+                 for k in sorted(set(pinned) | set(here))
+                 if pinned.get(k, "<absent>") != here.get(k, "<absent>")]
+        if diffs:
+            print("PREFLIGHT_CONFIG_MISMATCH — this run resolves to different "
+                  "physics than the pinned nominal:")
+            for k, want, got in diffs:
+                print(f"    {k}: pinned={want!r}  this run={got!r}")
+            print("  Fix the APOLLO_ENV_PREFIX (and export the same vars in the "
+                  "submitting shell), or set ALLOW_CONFIG_DRIFT=1 to proceed "
+                  "deliberately.")
+            if os.environ.get("ALLOW_CONFIG_DRIFT", "0") != "1":
+                sys.exit(5)
+            print("  ALLOW_CONFIG_DRIFT=1 — proceeding anyway.")
+    else:
+        print(f"PREFLIGHT_NO_CONFIG_RECORD: {cfg_path} is missing, so the pinned "
+              f"nominal's configuration is unknown and cannot be checked.")
+        print("  Write one with:  python3 -c \"import json,apollo11 as A;"
+              "json.dump(A.run_config(),open('" + cfg_path + "','w'),indent=1,"
+              "sort_keys=True)\"  (under the env the nominal was derived with)")
+        print("  or set ALLOW_CONFIG_DRIFT=1 to proceed without the check.")
+        if os.environ.get("ALLOW_CONFIG_DRIFT", "0") != "1":
+            sys.exit(5)
+        print("  ALLOW_CONFIG_DRIFT=1 — proceeding without a config check.")
+    print("PREFLIGHT_OK (pinned nominal present + robust branch + config match: "
           + " ".join(req) + ")")
     sys.exit(0)
 

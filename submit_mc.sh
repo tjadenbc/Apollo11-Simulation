@@ -22,6 +22,25 @@ NTRIALS=${2:?usage: submit_mc.sh <outdir> <n_trials> [seed] [n_shards]}
 SEED=${3:-42}
 NSHARDS=${4:-17}
 WORKERS=16
+
+# SHARD WALL-CLOCK LIMIT, scaled to the shard's actual load.
+#
+# A flat 8 h was too short for a 10,000-trial run and failed silently-ish: at 17
+# shards each one carries ~588 trials, and at this project's measured ~816 s per
+# trial on 16 workers that is 8.3 h — just past the limit. The Jul-23 shards died
+# exactly this way and had to be resubmitted at 16 h. Gap-safe resume means no
+# data is lost, but 8 h of cluster time is.
+#
+# Budget 2x the nominal estimate, because adverse-date epochs cost roughly double
+# (long-tail TEI homotopy solves) and a too-generous limit costs nothing but
+# backfill priority, whereas a too-tight one costs a whole run.
+_TPS=$(( (NTRIALS + NSHARDS - 1) / NSHARDS ))          # trials per shard, rounded up
+_EST_H=$(( (_TPS * 816 * 2) / (WORKERS * 3600) + 1 ))  # 2x margin, +1 h slack
+[ "$_EST_H" -lt 8 ] && _EST_H=8                        # never below the old floor
+[ "$_EST_H" -gt 48 ] && _EST_H=48                      # cluster sanity cap
+SHARD_TIME=${APOLLO_SHARD_TIME:-${_EST_H}:00:00}
+echo "shard wall-clock limit: $SHARD_TIME  (${_TPS} trials/shard on $WORKERS workers)"
+
 PY=${APOLLO_PY:-$HOME/apollo-venv/bin/python}
 PROJ=${APOLLO_PROJ:-$HOME/apollo11_project}
 LOGS=$PROJ/slurm_logs
@@ -76,8 +95,15 @@ fi
 # one-at-a-time at full width.
 # %A = array-master id (one id covers a whole shard array; %i would emit
 # invalid bracket tokens like 12345_[15-16] for pending array elements).
+# APOLLO_NO_SERIALIZE=1 opts out: the chain then starts immediately on whatever
+# nodes are idle instead of waiting for the queue to drain. Use it when the
+# queue holds another project's long jobs and free nodes are sitting idle.
 EXISTING=$(squeue -u "$USER" -h -o %A | sort -un | paste -sd: - || true)
 SERIAL_DEP=""
+if [ "${APOLLO_NO_SERIALIZE:-0}" = "1" ]; then
+    echo "APOLLO_NO_SERIALIZE=1: not serializing behind existing jobs"
+    EXISTING=""
+fi
 if [ -n "$EXISTING" ]; then
     SERIAL_DEP="--dependency=afterany:$EXISTING"
     echo "serializing behind existing job(s): $EXISTING"
@@ -89,7 +115,7 @@ SETUP_ID=$(sbatch --parsable --time=2:00:00 $SERIAL_DEP \
     --wrap "$WRAP_ENV $PY cluster_run.py setup $OUTDIR $NTRIALS $SEED")
 echo "setup job: $SETUP_ID"
 
-SHARD_ID=$(sbatch --parsable --time=8:00:00 --dependency=afterok:$SETUP_ID \
+SHARD_ID=$(sbatch --parsable --time=$SHARD_TIME --dependency=afterok:$SETUP_ID \
     --job-name=a11-shard --array=0-$((NSHARDS-1)) \
     --nodes=1 --ntasks=1 --cpus-per-task=$WORKERS \
     --output="$LOGS/shard-%A_%a.out" \

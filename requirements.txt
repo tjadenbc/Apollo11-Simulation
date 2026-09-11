@@ -5,3 +5,8 @@ numpy>=2.0        # tested 2.4.4
 scipy>=1.13       # tested 1.17.1 (solve_ivp, least_squares, brentq, fsolve)
 pandas>=2.2       # tested 3.0.2  (results I/O, stats)
 matplotlib>=3.8   # tested 3.10.8 (figures; use the "Agg" backend headless)
+global-land-mask>=1.0  # offline ~1 km land/ocean grid — splash-in-water recovery
+                       #   screen (ENABLE_SPLASH_WATER_CHECK). Degrades to no-op if absent.
+jplephem>=2.20    # tested 2.24 — reads the JPL DE440 SPICE kernel (ENABLE_JPL_EPHEMERIS; REQUIRED
+                  #   for the definitive configuration: with APOLLO_JPL_EPHEMERIS=1 set and no
+                  #   kernel the code refuses to run rather than fall back silently)

@@ -6,8 +6,8 @@ splashdown — as one continuous, numerically-integrated trajectory, thousands o
 times.
 
 Every powered manoeuvre is a finite-thrust integration and every coast a
-three-body integration under Earth (+J2–J6 near-field) and Moon gravity, using a
-real July-1969 lunar ephemeris and a degree-8 GRAIL gravity field, with faithful
+three-body integration under Earth (+J2–J6 near-field) and Moon gravity, using the
+JPL **DE440** planetary/lunar ephemeris and a degree-8 GRAIL gravity field, with faithful
 renderings of Apollo's own guidance laws (iterative-guidance ascent, B-plane
 midcourse corrections, a two-burn lunar-orbit insertion, MSFN/RTCC-style ground
 navigation, constant-drag entry guidance), 1969-era engine reliabilities, and a
@@ -21,21 +21,39 @@ Across **10,000 trials** (seed 37, distributed on a compute cluster):
 
 | Metric | Estimate |
 |---|---|
-| **Full-mission success** | **88.0 %**  (95 % CI 87.3–88.6 %) |
-| **Crew survival** | **94.0 %** |
+| **Full-mission success** | **83.6 %** |
+| **Crew survival** | **94.2 %** |
+| **Flawless (no anomaly at all)** | **82.1 %** |
+
+Two different uncertainties attach to that number, and they are not the same size.
+The 95 % Wilson interval, **82.9–84.3 %**, is a *Monte Carlo sampling* interval: it says
+how well 10,000 trials have converged on the model's answer **at its input failure
+rates**. How well those rates are themselves known is a separate and much larger
+question — propagating binomial posteriors on the three rates that rest on a countable
+historical record (one service-module loss in 15 flights, no S-IVB restart failure in 10,
+about two docking anomalies in 21) gives a 95 % credible interval of **63–92 %** on
+mission success and **87–96 %** on crew survival.
 
 "Mission success" follows NASA's actual objective: the crew reached the lunar
 surface **and** all three returned to Earth alive — even if a recovered in-flight
 anomaly occurred (e.g. a docking failure resolved by a contingency EVA crew
-transfer). Of the 8,800 successful missions, **8,646 were flawless** (no anomaly
-at all); 154 succeeded despite a recovered anomaly. The ~6-point gap between crew
+transfer). Of the 8,359 successful missions, **8,208 were flawless** (no anomaly
+at all); 151 succeeded despite a recovered anomaly. The 10.6-point gap between crew
 survival and mission success is Apollo's abort architecture at work: many
-missions never complete the objective but still bring the crew home.
+missions never complete the objective but still bring the crew home — most often a
+S-IVB that fails to relight for translunar injection, which strands the mission in a
+safe Earth parking orbit.
 
-The nominal trajectory reproduces Apollo 11's flown record end to end — burn
-times to within seconds, the major ΔV budgets to better than one percent, and a
-lunar touchdown **6.8 km from the targeted landing site** (Apollo 11's own
-as-flown miss of its aim point was about 6 km).
+The nominal trajectory reproduces Apollo 11's flown record end to end — burn times to
+within about a second, trans-Earth injection ΔV to within **0.1 %**, an eight-day mission
+duration to within 0.1 %, a peak entry deceleration of 6.38 g against the flown 6.5, a lunar
+touchdown **8.0 km from the aim point**, and a splashdown **14.5 km from Apollo 11's actual
+recovery position**. Crucially it is derived without using any of Apollo's flown trajectory
+values: the launch azimuth, the injection-guidance preset and the descent-orbit timing are
+all solved from physics and geometry rather than commanded, so the model predicts the flight
+rather than replaying it. Re-deriving it from scratch at the program's other 1969 launch
+opportunities and running a matched 10,000-trial fleet at each gives **83.5–83.8 %** — the
+estimate is a property of the vehicle and mission design, not of the day it flew.
 
 The definitive run lives in [`outputs/final/`](outputs/final/).
 Open [`outputs/final/dashboard.html`](outputs/final/dashboard.html) in a browser
@@ -51,9 +69,11 @@ attribution, phase timing vs. Apollo 11's flown values, and known limitations.
 | `generate_outputs.py` | Builds `dashboard.html`, `summary.txt`, and the figures from a run directory (data-driven). |
 | `lunar_gravity_coeffs.py` | Embedded GRAIL GRGM1200A spherical-harmonic coefficients (see data note below). |
 | `od_filter.py` | STM-LinCov orbit-determination covariance primitives for the MSFN ground-navigation model. |
+| `epistemic_uncertainty.py` | Parameter (epistemic) uncertainty of the headline: reweights the fleet over the three failure rates that rest on a countable record and propagates their Beta posteriors to a credible interval. |
+| `entry_heating_validate.py`, `entry_heating_fleet.py`, `entry_heating_boundary.py` | Sutton–Graves stagnation-point entry heating, recovered by re-flying each trial's entry from its recorded interface state (a 25-trial gate, the sharded fleet driver, and a corridor-boundary sweep). |
 | `cluster_run.py`, `submit_mc.sh` | The SLURM sharding pipeline used to produce the definitive run on a compute cluster. |
 | `launch_tli_preset.json` | Cached launch/TLI targeting preset, pinned for cross-machine reproducibility. |
-| `outputs/final/` | **The definitive run**: per-trial results CSVs, the nominal trajectory, captured targeting products, the dashboard, and figures. |
+| `outputs/final/` | **The definitive run**: per-trial results CSVs, the nominal trajectory, captured targeting products, the run configuration, the dashboard, a stage-by-stage realism audit, the parameter-uncertainty tables, the per-entry heating, and figures. |
 
 ## Quick start
 
@@ -94,6 +114,12 @@ each documented inline, and turning one OFF is bit-identical to the pre-feature
 behaviour. A no-landing, cislunar-only profile is enabled with the
 `APOLLO_NO_LANDING=1` environment variable.
 
+The definitive configuration reads the JPL **DE440** kernel, which is **not redistributed**
+here (~114 MB; NASA/JPL publishes it directly). Set `APOLLO_JPL_EPHEMERIS=1` and point
+`APOLLO_JPL_KERNEL` at your own copy, or drop one at `ephemeris/de440.bsp` beside
+`apollo11.py`, which is the default location. With the flag set and the kernel unreadable the
+simulation **stops rather than silently falling back** to an analytic ephemeris.
+
 ## Reproducibility
 
 Local serial and parallel drivers are **bit-identical** (per-trial perturbations
@@ -128,48 +154,26 @@ complementing the per-trial summary rows in the committed CSVs.
 ## Data provenance
 
 The lunar gravity field (`lunar_gravity_coeffs.py`) is derived from NASA's
-**GRAIL GRGM1200A** model; the ephemeris uses the Meeus analytic series and
-public NASA mission constants. NASA data products are in the public domain in
+**GRAIL GRGM1200A** model; the definitive run's ephemeris is JPL **DE440** (read from the
+kernel named above, not redistributed here), with an analytic Meeus series retained as the
+flag-off fallback. Mission constants are public NASA values. NASA data products are in the public domain in
 the U.S. The MIT license below covers the original source code only — see
 `LICENSE` for the third-party data notice.
 
 ## Use of generative AI
 
-This project was produced in a sustained collaboration between the author and
-Claude (Anthropic), a large language model used across successive versions over
-the project's development, and the division of labor was consequential enough to
-warrant a fuller statement than the customary disclosure line. The conception is
-the author's: the question, the decision to answer it with a physics-integrated
-Monte Carlo rather than a reliability fault tree, and the design doctrines that
-define the model — fidelity first; as-planned targeting; the mission-success
-definition; and the requirement that every stage be validated against the
-historical record before being built upon. Claude performed essentially all of
-the implementation: the simulation code, the guidance and targeting solvers, the
-failure and crew-survival models, the cluster pipeline, the excavation of the
-historical sources behind the calibrated constants, the diagnostic
-investigations, the statistical analysis of the Monte Carlo campaigns, and the
-drafting of the project's documentation and manuscript. Design and refinement
-were a genuine dialogue between the two: the highest-leverage corrections
-typically began as the author's questions or catches — among them the as-planned
-landing-aim doctrine and the demand for the cross-machine reproducibility tests
-described above — and were then diagnosed and engineered by Claude, while
-Claude's technical designs were in turn constrained, redirected, and sometimes
-rejected by the author's judgment of what faithfulness required.
-
-The process safeguards matter as much as the division of labor. The author
-directed the work throughout; set the validation discipline under which no model
-change was adopted without tiered Monte Carlo revalidation; reviewed, verified,
-and edited all code, numerical results, physical assumptions, and text; and
-takes full responsibility for the content of this project. Errors surfaced late
-in development — in the model's landing-site targeting and in the project's own
-reported numbers — were caught by exactly that review structure, some by the
-author's reading and some by adversarial verification passes the author
-required. The honest summary is that the author served as principal
-investigator — conception, judgment, quality control, and accountability — while
-Claude served as the research staff: construction, diagnosis, analysis, and
-drafting at a speed and volume no individual could match. The author could not
-have completed this project without Claude, and Claude could not have completed
-this project without the author.
+This work was produced in a sustained collaboration between the author and Claude
+(Anthropic), a large language model used across successive versions over the project's
+development, and the division of labor was consequential enough to warrant a fuller statement
+than the customary disclosure line. The conception is the author's: the question, the
+decision to answer it with a physics-integrated Monte Carlo rather than a reliability fault
+tree, and the design doctrines that define the simulation and its validation. Claude performed
+essentially all of the implementation. Design and refinement of the simulation proceeded in stages and were a genuine dialogue between the two, in which Claude's artifacts were often constrained, redirected, and sometimes rejected by the author's
+judgment and/or validation procedure. The honest summary is that the author served as principal investigator —
+conception, judgment, quality control, and accountability — while Claude served as the
+research staff: construction, diagnosis, analysis, and drafting at a speed and volume no
+individual could match. The author could not have completed this project without Claude,
+and Claude could not have completed this project without the author.
 
 ## License
 

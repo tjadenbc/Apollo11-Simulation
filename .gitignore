@@ -60,4 +60,31 @@ audit_style.css
 apollo11_realism_audit.md
 apollo_no_landing_design.md
 paper-updated-bak.md
-outputs/final/Apollo11_Realism_Audit.html
+
+# --- JPL ephemeris kernel (NOT redistributed: ~114 MB, published by NASA/JPL) ---
+ephemeris
+ephemeris/
+
+# --- Manuscript build + session working files (local only) ---
+TODO.md
+PROOFREAD_*.md
+md2tex.py
+md2tex.py.*
+build_paper.sh
+watch_heat_run.sh
+ieee_aero2027/
+paper-updated.pre-*.md
+paper_launch_window_section_DRAFT.md
+paper_review_highlighted.*
+launch_window_slots.md
+launch_tli_preset_delay*.json
+launch_tli_preset_flightanchored.json
+atm_feasibility.py
+atm_validate.py
+dipbank_sweep.py
+cluster_node_placement.md
+build_expanded_table.py
+generate_audit.py
+entry_heating_validation.json
+entry_heating_boundary.json
+outputs/final/heat_partial/

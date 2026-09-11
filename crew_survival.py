@@ -154,6 +154,110 @@ SURVIVAL_MODEL = {
             "Crew survives easily."
         ),
     },
+    # --- Diagnostic sentinels -------------------------------------------
+    # These four are NOT flight modes. They are the simulator's defensive
+    # fallbacks: three `.get(reason, "unknown")` branches (launch/ascent/entry)
+    # plus entry's literal catch-all. Each fires only when a phase reports a
+    # failure whose reason was never enumerated — i.e. exactly when the model
+    # has hit something it does not understand. Left unlisted they reached the
+    # 0.5 default, which is the worst possible pairing: an UNKNOWN failure
+    # scored with an UNKNOWN survival, in a direction that flatters the
+    # headline half the time. They are therefore given the CONSERVATIVE bound
+    # (0.0) so an unmodelled path can never improve a result, and their real
+    # purpose is diagnostic: if one of these ever appears in a fleet, the
+    # correct response is to enumerate the actual reason and give it a derived
+    # entry — never to trust this number. Fix the model, do not absorb it.
+    # (None has ever fired; they are invisible to any observed-label audit,
+    # which is why they survived one.)
+    "launch_unknown": {
+        "p_survive": 0.0,
+        "outcome": "unenumerated_launch_failure",
+        "explanation": (
+            "Sentinel: the launch phase failed with a reason not present in "
+            "the enumerated set. Conservative whole-stack bound — investigate "
+            "and enumerate rather than rely on this value."
+        ),
+    },
+    "ascent_unknown": {
+        "p_survive": 0.0,
+        "outcome": "unenumerated_ascent_failure",
+        "explanation": (
+            "Sentinel: LM ascent failed with an unenumerated reason. "
+            "Conservative bound; routes to lm_crew via the ascent_ prefix. "
+            "Investigate and enumerate rather than rely on this value."
+        ),
+    },
+    "entry_unknown": {
+        "p_survive": 0.0,
+        "outcome": "unenumerated_entry_failure",
+        "explanation": (
+            "Sentinel: entry failed with an unenumerated reason. Conservative "
+            "whole-stack bound, consistent with every other entry-class mode "
+            "in this model being 0.0. Investigate and enumerate."
+        ),
+    },
+    "entry_failed": {
+        "p_survive": 0.0,
+        "outcome": "unenumerated_entry_failure",
+        "explanation": (
+            "Sentinel: entry's literal catch-all label, set when the entry "
+            "phase reports failure without a specific reason. Conservative "
+            "whole-stack bound. Investigate and enumerate."
+        ),
+    },
+    "tli_propellant_depleted": {
+        "p_survive": 0.98,
+        "outcome": "abort_to_earth_orbit",
+        "explanation": (
+            "The S-IVB starved before guidance cutoff during the translunar "
+            "injection burn (the TLI propellant margin is honest and tight, "
+            "~130 m/s of reserve). The stack does not reach escape and is "
+            "left on an elliptical Earth orbit whose perigee is still the "
+            "~185 km parking altitude the burn started from. The mission is "
+            "lost, but the crew is in the most recoverable abort geometry in "
+            "the flight plan: the CSM separates with its SPS propellant load "
+            "entirely unspent (~18,400 kg, far beyond the small retrograde "
+            "impulse a perigee deorbit needs) and flies a controlled entry. "
+            "Rated ABOVE the decaying-parking-orbit abort (0.85) because "
+            "there is no unstable-orbit time pressure forcing entry at a bad "
+            "flight-path angle, and just below the free-return LOI abort "
+            "(0.97) in spirit: near-certain survival, mission lost. The 2% "
+            "covers a bad separation from a partially-burned stage or an SPS "
+            "that will not commit. Whole-stack fate."
+        ),
+    },
+    "tli_s_ivb_restart_failure": {
+        "p_survive": 0.99,
+        "outcome": "abort_remain_in_parking_orbit",
+        "explanation": (
+            "The S-IVB's J-2 failed to relight for translunar injection — the "
+            "failure Apollo 6 suffered. The stack is left in the nominal 185 km "
+            "circular parking orbit it was already flying: no dispersed "
+            "trajectory, no decaying orbit, no time pressure, and a CSM whose "
+            "SPS load is entirely unspent. Rated identically to the missed "
+            "ignition window (0.99), which leaves the vehicle in the same "
+            "state by a different cause, and above propellant depletion (0.98), "
+            "which separates the crew from a partially-burned stage. The "
+            "mission is lost at the cost of near-certain crew recovery. "
+            "Whole-stack fate."
+        ),
+    },
+    "tli_ignition_window_missed": {
+        "p_survive": 0.99,
+        "outcome": "abort_remain_in_parking_orbit",
+        "explanation": (
+            "The S-IVB restart opportunity for translunar injection passed "
+            "without ignition, so the stack simply remains in the nominal "
+            "185 km circular parking orbit. This is the most benign abort in "
+            "the model: no dispersed trajectory, no time pressure, a fully "
+            "fuelled CSM, and a routine deorbit from low Earth orbit. The "
+            "mission is lost at the cost of near-certain crew recovery. "
+            "Deliberately kept as a SEPARATE label from propellant depletion "
+            "so a guidance/timing failure can never masquerade as propellant "
+            "physics (see the ignition-crossing wrap-boundary bug). "
+            "Whole-stack fate."
+        ),
+    },
     "launch_parking_orbit_decays_into_atmosphere": {
         "p_survive": 0.85,
         "outcome": "abort_SPS_deorbit",
@@ -330,6 +434,20 @@ SURVIVAL_MODEL = {
             "collapsed one); losing a SECOND main is non-survivable. Rare "
             "(~1e-4-class; no CM was ever lost to parachutes in the program). "
             "Whole-CM fate at water impact — routes to 'all' at p_survive 0.0."
+        ),
+    },
+    "recovery_land_impact": {
+        "p_survive": 0.0,
+        "outcome": "cm_land_impact",
+        "explanation": (
+            "The capsule came down on LAND rather than water. The Apollo CM was "
+            "designed for water landing only (no landing retro-rockets; impact "
+            "attenuation tuned for water cushioning), so a land impact leaves it "
+            "not recovered intact and is modeled as loss of everyone aboard — a "
+            "conservative bound (no Apollo ever landed on land, so no survival "
+            "rate exists to justify partial survival). Whole-CM fate — routes to "
+            "'all' at p_survive 0.0. Extremely rare (grossly rev-slipped returns "
+            "whose entry ground track rotates onto land)."
         ),
     },
     "surface_both_suits_lost": {
@@ -643,6 +761,13 @@ def apply_survival_model(df, seed=42):
                 # Any trans-earth no-return-class loss (e.g. no entry found
                 # after the MCC chain) is the whole-CM return-leg loss.
                 _fk = "transearth_no_entry"
+            elif _fk.startswith("tei_"):
+                # TEI targeting found no Earth-return trajectory: the stack is
+                # stranded in/around lunar orbit with no returning path — the
+                # same whole-CM return-leg loss as transearth_no_entry (crew
+                # exposure already routes tei_* to the whole stack). Covers
+                # tei_no_earth_return_found and any future suffixed tei_ mode.
+                _fk = "transearth_no_entry"
         model = SURVIVAL_MODEL.get(_fk, None)
         if model is None:
             # Unmodeled failure: surface the gap loudly rather than silently
@@ -685,10 +810,19 @@ def apply_survival_model(df, seed=42):
         exposed = "all" if nominal else crew_exposed_for_failure(fail)
         if exposed == "all":
             survived = u_shared[i] < psurv[CREW[0]][i]
+            # Transposition & docking failure is the one shared-vehicle mode
+            # whose event is itself non-lethal: it aborts to a HEALTHY CSM, so
+            # its p_survive (~0.99) IS the ordinary return-survival rate. The
+            # rare loss is therefore a return-leg death, not a T&D death —
+            # attribute it to the return leg (like the LM-crew solo returns),
+            # so no death is charged to a mode that by itself kills no one.
+            _dc = (RETURN_LEG_LOSS
+                   if str(fail) == "transposition_docking_failure"
+                   else str(fail))
             for name in CREW:
                 surv[name][i] = survived
                 if not survived:
-                    dcause[name][i] = str(fail)   # shared-vehicle event
+                    dcause[name][i] = _dc         # shared-vehicle event
         elif exposed == "one_lm_crew":
             # Terminal EVA suit failure: ONE moonwalker (chosen at random)
             # dies of the suit failure; the partner aborts the EVA and, with
@@ -881,11 +1015,20 @@ def generate_survival_report(df, outdir=OUTDIR):
     bars = ax.barh(y_pos, by_cause.values, color=colors, edgecolor='black', alpha=0.85)
     ax.set_yticks(y_pos)
     def _pretty(c):
-        # Readable label from the raw mission_failure token: collapse the
-        # doubled "descent_descent" prefix (the code emits "descent_"+reason
-        # where reason already starts with "descent_") and de-underscore.
+        # Readable label from the raw mission_failure token. Prefer the SAME
+        # display name the dashboard and the paper's Tables 4/5 use, so a reader
+        # does not meet "tli s ivb restart failure" in a figure and "Ignition
+        # failure at TLI" in the table beside it. Falls back to de-underscoring.
         s = str(c).replace("descent_descent_", "descent_")
-        return s.replace("_", " ")
+        try:
+            import generate_outputs as _go
+            lbl = _go.FAILURE_EXPLANATIONS.get(str(c), _go.FAILURE_EXPLANATIONS.get(s))
+            if lbl and lbl[0]:
+                return lbl[0]
+        except Exception:
+            pass
+        _EXTRA = {"crew_return_leg_loss": "Crew return-leg loss (post-abort / solo return)"}
+        return _EXTRA.get(s, s.replace("_", " "))
     ax.set_yticklabels([_pretty(c) for c in by_cause.index], fontsize=9)
     ax.invert_yaxis()
     ax.set_xlabel("Astronaut deaths (count)")
@@ -932,7 +1075,7 @@ def generate_survival_report(df, outdir=OUTDIR):
     from matplotlib.patches import Patch
     ax2.legend(handles=[Patch(facecolor='#C73E1D', label='LM crew (surface)'),
                         Patch(facecolor='#2D5A3D', label='CMP (orbit)')],
-               loc='lower center', fontsize=8)
+               loc='upper left', fontsize=8)
     fig.suptitle(f"Apollo 11 Monte Carlo — Mission vs Crew Outcomes ({n} trials)",
                   fontsize=14, fontweight='bold')
     plt.tight_layout()
@@ -982,7 +1125,7 @@ def main():
     print(f"  ✓ {out_csv}")
 
     print("Generating survival report and plots...")
-    generate_survival_report(df)
+    generate_survival_report(df, OUTDIR)
     print("Done.")
 
 
