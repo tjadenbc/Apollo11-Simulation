@@ -1,0 +1,51 @@
+EPISTEMIC (PARAMETER) UNCERTAINTY OF THE HEADLINE -- outputs/cluster_fleet10k_jul16_s37_def9  (n=10000, seed 37)
+
+Draw-stream check (regenerated from the seed, compared with the results file):
+  SM failure: 576 trials show one, all 576 were drawn; 642 drawn in all. The other 66 were drawn in trials that had already ended -- on an earlier failure, or on a recovered anomaly closing the flight -- before the strike time.
+  dockings drawn: T&D 98, rendezvous 100;  reached TLI restart 9784, restart failed 466
+  realized draw fractions: SM 6.42%  restart 4.76%  T&D 0.98%  rendezvous 1.00%
+  identity reconstructs the fleet at its realized fractions: mission 83.80% vs 83.80%, crew 93.66% vs 93.66%
+
+Monte Carlo sampling uncertainty (for scale): fleet 83.80% mission success, binomial s.e. 0.37 pt, Wilson 95% half-width ~0.72 pt
+
+Post-stratified success rates on the SM draw (the identity's S0, S1):
+  not drawn: mission 88.82%  crew 96.43%      drawn: mission 10.59%  crew 53.27%
+  slope: each +1 pt of SM occurrence rate costs 0.78 pt of mission success and 0.43 pt of crew survival
+
+SM occurrence-rate sensitivity (S-IVB restart and docking at the paper's rates):
+  basis                                         p_SM   mission     crew   (Monte Carlo s.e., pt)
+  Clopper-Pearson 95% lower bound              0.17%     89.0%    96.4%   +/-0.33 / 0.19
+  Jeffreys posterior 2.5%                      0.73%     88.5%    96.1%   +/-0.32 / 0.19
+  frequentist point estimate 1/15 (paper)      6.67%     83.9%    93.5%   +/-0.31 / 0.22
+  Jeffreys posterior median                    7.71%     83.0%    93.1%   +/-0.31 / 0.23
+  Jeffreys posterior mean                      9.38%     81.7%    92.4%   +/-0.32 / 0.25
+  referee's illustrative 15%                  15.00%     77.3%    89.9%   +/-0.33 / 0.34
+  Jeffreys posterior 97.5%                    27.18%     67.8%    84.7%   +/-0.41 / 0.55
+  Clopper-Pearson 95% upper bound             31.95%     64.0%    82.6%   +/-0.45 / 0.64
+
+S-IVB restart-rate sensitivity (SM and docking at the paper's rates):
+  basis                                         p_rs   mission     crew   (Monte Carlo s.e., pt)
+  Jeffreys posterior 2.5%                      0.00%     87.8%    93.4%   +/-0.30 / 0.24
+  Jeffreys posterior median                    2.19%     85.9%    93.5%   +/-0.30 / 0.24
+  Jeffreys posterior mean 4.55%, applied as 4.5% (paper)   4.50%     83.9%    93.5%   +/-0.29 / 0.24
+  Jeffreys posterior 97.5%                    21.72%     68.7%    94.3%   +/-0.24 / 0.23
+  rule-of-three upper bound 3/10              30.00%     61.5%    94.6%   +/-0.21 / 0.24
+
+Joint posterior over (p_SM, p_restart, p_dock) -- Jeffreys Beta(1/2,1/2) priors, 200000 draws:
+  posterior-mean rates: SM 9.38%  restart 4.55%  docking 1.134%  -> mission 81.5%  crew 92.4%
+  mission success: mean 81.6%  median 83.1%  95% credible interval [63.1, 91.7]%  (width 28.6 pt)
+  crew survival:   mean 92.4%  median 93.1%  95% credible interval [84.6, 96.1]%  (width 11.5 pt)
+  landing rate:    mean 86.3%  median 87.8%  95% credible interval [69.6, 94.4]%   (fleet 87.7%; paper Sec. 7.1)
+    SM       alone: mission 95% CrI [67.7, 88.3]%  crew [84.7, 96.1]%  sd 5.50 pt  (53% of the joint mission variance)
+    restart  alone: mission 95% CrI [66.8, 85.4]%  crew [92.1, 93.3]%  sd 5.14 pt  (46% of the joint mission variance)
+    docking  alone: mission 95% CrI [80.2, 82.4]%  crew [92.3, 92.4]%  sd 0.57 pt  (1% of the joint mission variance)
+
+Joint posterior over (p_SM, p_restart, p_dock) -- uniform Beta(1,1) priors, 200000 draws:
+  posterior-mean rates: SM 11.76%  restart 8.33%  docking 1.301%  -> mission 76.4%  crew 91.6%
+  mission success: mean 76.4%  median 77.6%  95% credible interval [56.3, 89.3]%  (width 33.0 pt)
+  crew survival:   mean 91.6%  median 92.2%  95% credible interval [83.8, 95.8]%  (width 12.0 pt)
+  landing rate:    mean 81.6%  median 83.0%  95% credible interval [62.4, 92.5]%   (fleet 87.7%; paper Sec. 7.1)
+    SM       alone: mission 95% CrI [62.5, 84.1]%  crew [84.0, 95.8]%  sd 5.70 pt  (44% of the joint mission variance)
+    restart  alone: mission 95% CrI [59.4, 83.2]%  crew [91.1, 92.9]%  sd 6.44 pt  (56% of the joint mission variance)
+    docking  alone: mission 95% CrI [75.2, 77.1]%  crew [91.6, 91.6]%  sd 0.52 pt  (0% of the joint mission variance)
+

@@ -776,6 +776,17 @@ def apply_survival_model(df, seed=42):
                   f"-> defaulting p_survive=0.5")
         p_mode = model['p_survive'] if model else 0.5
         outcome[i] = (model['outcome'] if model else 'unknown_abort')
+        # APOLLO_NOLOI_RETURN (apollo11.py): a no-LOI trial carries the return it
+        # can actually fly. The mode's rate stands for a free return or a powered
+        # abort within budget (its outcome label says which); with no return in
+        # reach the crew is lost. Absent column or empty value = unchanged.
+        _nr = row.get('noloi_return')
+        if isinstance(_nr, str) and _nr:
+            if _nr == 'none':
+                p_mode = 0.0
+                outcome[i] = 'no_return_without_loi'
+            elif _nr != 'free_return':
+                outcome[i] = _nr
         exposed = crew_exposed_for_failure(fail)
 
         if exposed == "all":

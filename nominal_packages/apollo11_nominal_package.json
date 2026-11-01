@@ -1,0 +1,1035 @@
+{
+ "schema": "apollo11_nominal_package/1",
+ "label": "APOLLO11_NOMINAL_JUL16_BUILD1",
+ "built_utc": "2026-10-25T22:33:19.942805+00:00",
+ "trajectory_span": "launch_to_ei",
+ "mission": "Apollo 11, as-planned doctrine (Site 2, planned LOI/LOI-2/TEI targets), launch opportunity 1969-07-16",
+ "builder": {
+  "solver_dir": "/Users/tjadenbc/apollo_solver",
+  "argv": [
+   "package.py",
+   "--label",
+   "APOLLO11_NOMINAL_JUL16_BUILD1",
+   "--out",
+   "outputs/apollo11_nominal_package.json"
+  ],
+  "python": "3.12.10",
+  "numpy": "2.4.6",
+  "scipy": "1.17.1",
+  "spiceypy": "8.3.0",
+  "solver_files_sha256": {
+   "constants.py": "1a3d0cab67af2b26468bd90743a02b9320a97f358eecded9fc6b648ac4780216",
+   "frames.py": "d1d19c4d36182fe115e8155c93586d42e66352f937817aa8160f982675c6b433",
+   "ephem.py": "d404f9ac8ee78e59aa46f26a46df9088f3b23ed1dce4a7b20d3a63437dd6c564",
+   "forces.py": "e9e14888c6b483c6375c38bb9873684d0343c9acf90fe2db4d5e1c1c13fc7d7c",
+   "propagate.py": "e2b7568a449a3fca11b196945ac1a05406a82ce940a0ceab5d0027055c944b0d",
+   "chain.py": "5b84eb102f030588874e09730e4b9ca3239c7038e3505c8efb04c37ce0c2a8ed",
+   "tli_solver.py": "866540bd44ac7279dda6f7a84f7d38fa84ac08faf17bd9e37cff790ac06d12d9",
+   "loi_solver.py": "62ca447bb3a3286b871c5f4f290a28a841ad9f99a1205204e7e884d65740d91a",
+   "tei_solver.py": "26e4b6a1f9755ed11329844c169b29ab531fe347d03103781a0da1f82296a977",
+   "eigeom.py": "597cbbd6a8060007acfd1bc3195dff5ce9e7d60b5944b33c945e31cce516bc78",
+   "package.py": "54626902fa0e159212676a802dc40c9daa71edd35f57fbc3bc6bac14f80b3809",
+   "lunar_gravity_coeffs.py": "ca31a1ed4fada5da84f5593e0b57d464a156a92e4ddc58bc62e429427c488672"
+  }
+ },
+ "consumer": {
+  "path": "/Users/tjadenbc/Claude Code/Apollo 11/apollo11_project",
+  "apollo11_py_sha256": "a5deff6c65f33216615266f1f366b21c5a78de09bbc2d499d6d91a2c9e853b48",
+  "insertion_capture": {
+   "path": "validation/consumer_insertion_capture.json",
+   "sha256": "71814573fef15b782e230d664245176a5e512977d4041db15e90e6c4712c406f",
+   "rows": 52,
+   "azimuth_range_deg": [
+    60.0,
+    110.0
+   ]
+  },
+  "binding_note": "bind liftoff_jd from this package (the consumer's JD_LAUNCH literal 2440419.0639 is 0.96 s after 13:32:00.000 UTC); fly the delivered burns; keep in-flight correctors (MCCs, LOI re-targeting from dispersed arrivals, TEI re-aim, entry guidance)"
+ },
+ "epoch": {
+  "utc": "1969-07-16T13:32:00.960000",
+  "jd": 2440419.0639,
+  "jd_tt": 2440419.0643594908,
+  "et_tt_s_past_j2000": -961280839.3400042,
+  "et_provenance": "[consumer] (jd_utc - J2000) * 86400 + DELTA_T_S (39.7 s); TT fed to the TDB kernel, TT-TDB <= 1.7 ms declared",
+  "et_spice_str2et_s_past_j2000": -961280837.8563333,
+  "et_spice_minus_consumer_s": 1.483670949935913,
+  "all_elapsed_times_are_relative_to": "this instant (get_s = et - et_tt_s_past_j2000)",
+  "frame": "equatorial, MEAN EQUINOX AND EQUATOR OF JD(UTC) liftoff, FROZEN; IAU-1976 precession only, no nutation",
+  "ephem_precession": "of_date",
+  "ephem_precession_note": "of_date: Moon/Sun rotated by P(JD_TT of the query) as apollo11.py does; frozen: by P(JD_LAUNCH)",
+  "gmst0_rad": 2.394854229039676,
+  "liftoff_utc": "1969-07-16T13:32:00.960000",
+  "liftoff_jd": 2440419.0639,
+  "consumer_jd_launch_literal": 2440419.0639,
+  "liftoff_minus_consumer_literal_s": 0.0,
+  "delta_t_s": 39.7
+ },
+ "force_model": {
+  "earth": {
+   "mu": 398600441800000.0,
+   "radius_m": 6378137.0,
+   "J2": 0.0010826267,
+   "zonals": {
+    "3": -2.5327e-06,
+    "4": -1.6196e-06,
+    "5": -2.273e-07,
+    "6": 5.4068e-07
+   },
+   "zonal_gate_radius_m": 30000000.0,
+   "omega_rad_s": 7.292115e-05
+  },
+  "moon": {
+   "mu": 4904869500000.0,
+   "radius_m": 1737400.0,
+   "figure": "GRGM1200A degree 8 inside 3500 km, C20+C22 to 50000 km (R 1738 km)",
+   "J2": 0.00020323,
+   "C22": 2.2382e-05
+  },
+  "sun": {
+   "mu": 1.32712440018e+20
+  },
+  "srp": "off (not in the consumer)",
+  "ephemeris": "JPL DE440 via spiceypy, Moon and Sun rotated by the precession of date",
+  "integrator": "DOP853 rtol 1e-10 (burns), coasts rtol 1e-10/1e-11, exact event roots"
+ },
+ "launch_block": {
+  "liftoff_utc": "1969-07-16T13:32:00.960000",
+  "liftoff_jd": 2440419.0639,
+  "pad": "KSC LC-39A",
+  "pad_lat_deg": 28.608389,
+  "pad_lon_deg": -80.604333,
+  "pad_datum": "geodetic WGS84",
+  "pad_alt_m": 3.0,
+  "azimuth_deg": 72.2544,
+  "azimuth_convention": "the consumer's LAUNCH_AZIMUTH_DEG: Earth-relative heading flown by its IGM ascent",
+  "azimuth_basis": "[outcome] solved: the steering yaw of the TLI burn is zero (coplanar injection)",
+  "azimuth_history": [
+   [
+    72.2544,
+    -0.009403744488588214
+   ]
+  ],
+  "meco_get_s": 693.91438566253,
+  "meco_altitude_m": 184999.99999869522,
+  "meco_speed_mps": 7793.152107437453,
+  "meco_fpa_deg": -4.712652763771028e-15,
+  "parking_perigee_m": 184999.99997521006,
+  "parking_apogee_m": 184999.99999869615,
+  "parking_period_s": 5291.492505053979,
+  "inclination_deg": 32.5195564836549,
+  "raan_deg": 359.1180382620645,
+  "arg_lat_meco_deg": 88.02331478356625,
+  "insertion_mass_kg": 129750.83150749447,
+  "insertion_model": "consumer_capture",
+  "insertion_provenance": "[consumer] the consumer's own IGM ascent (phase_saturn_v_launch, nominal), captured against azimuth and interpolated (cubic spline); exact at the capture nodes"
+ },
+ "insertion_plane": {
+  "h_hat": [
+   -0.008274830009074747,
+   -0.5375237586029513,
+   0.8432080028828457
+  ],
+  "inclination_deg": 32.5195564836549,
+  "raan_deg": 359.1180382620645,
+  "frame": "sim",
+  "defining_epoch_get_s": 693.91438566253,
+  "defining_epoch_jd": 2440419.0719314166,
+  "defining_model": "consumer_capture",
+  "pad_construction": "consumer IGM ascent",
+  "pad_datum": "geodetic",
+  "pad_lat_deg": 28.608389,
+  "pad_lon_deg": -80.604333,
+  "azimuth_convention": "the consumer's LAUNCH_AZIMUTH_DEG: Earth-relative heading flown by its IGM ascent"
+ },
+ "burn_table": [
+  {
+   "name": "TLI",
+   "stage": "S-IVB",
+   "engine": "J-2",
+   "epoch_convention": "ignition",
+   "t_ignition_get_s": 9877.933351710419,
+   "t_cutoff_get_s": 10152.731347783605,
+   "duration_s": 274.79799607318637,
+   "dv_mag_mps": 3166.172478990876,
+   "dv_definition": "rocket equation Isp g0 ln(m0/m1)",
+   "dv_consumer_definition_mps": 3141.6087817530606,
+   "dv_consumer_definition": "|v_cutoff| - circular speed at r_cutoff (the consumer's tli_dv)",
+   "cutoff_rule": "inertial_speed",
+   "cutoff_value": 10884.466735118383,
+   "cutoff_units": "m/s",
+   "cutoff_note": "deterministic re-fly: fly the delivered duration; dispersed trials: cut on |v| = cutoff_value rising (the consumer's rule)",
+   "thrust_n": 1033100.0,
+   "isp_s": 421.0,
+   "steer_pitch_deg": 0.5526894765961177,
+   "steer_yaw_deg": -0.009403744488588214,
+   "steering_convention": "thrust = cy (cp v_hat + sp n_in) + sy h_hat, n_in = h_hat x v_hat (in-plane, radial-inward on a circular orbit), angles constant through the burn (the consumer's _fly_launched_tli)",
+   "ignition_in_plane_angle_deg": 181.0,
+   "ignition_angle_reference": {
+    "moon_direction_epoch_get_s": 272656.0,
+    "crossing_anchor_get_s": 9856.2,
+    "rule": "in-plane angle from the position to the Moon direction at the reference epoch; the crossing nearest the anchor"
+   },
+   "mass_before_kg": 128398.0,
+   "mass_after_kg": 59635.26352512566,
+   "propellant_kg": 68762.73647487434,
+   "sivb_propellant_left_kg": 2437.263525125658,
+   "state_at_tig": {
+    "get_s": 9877.933351710419,
+    "utc": "1969-07-16T16:16:38.893000",
+    "r_m": [
+     6508222.589979153,
+     -746534.1410659862,
+     -353039.32490976
+    ],
+    "v_mps": [
+     977.9043435468377,
+     6514.5223430813685,
+     4176.375706265142
+    ],
+    "frame": "sim",
+    "tag": "AUTHORITATIVE"
+   },
+   "state_post": {
+    "get_s": 10152.731347783605,
+    "utc": "1969-07-16T16:21:13.691000",
+    "r_m": [
+     6429736.544698439,
+     1368502.6943817867,
+     995281.5661977468
+    ],
+    "v_mps": [
+     -1696.2397460949458,
+     9077.945434539835,
+     5760.667801495195
+    ],
+    "frame": "sim",
+    "tag": "AUTHORITATIVE"
+   },
+   "goals": [
+    {
+     "name": "perilune_altitude_m",
+     "target": 113900.0,
+     "tolerance": 500.0,
+     "achieved": 113899.92171369214,
+     "residual": -0.07828630786389112
+    },
+    {
+     "name": "free_return_ei_fpa_deg",
+     "target": -6.495,
+     "tolerance": 0.05,
+     "achieved": -6.491292789525456,
+     "residual_perigee_km": -0.01861194091010839,
+     "note": "the ballistic continuation of this TLI (no LOI) enters at this flight-path angle on the 400 kft shell: the free return Apollo 11 flew; solved on the return perigee radius"
+    },
+    {
+     "name": "perilune_get_s",
+     "target": 273215.0,
+     "tolerance": 10.0,
+     "achieved": 273215.0000213935
+    }
+   ],
+   "screened": {
+    "pericynthion_lon_deg": 173.60286588819417,
+    "pericynthion_lon_asflown_deg": 173.57,
+    "lon_residual_km": 0.9966038447130549,
+    "phase_pinned": false,
+    "site_crosstrack_at_site_epoch_km": 61.56379677490963,
+    "site_plane_carried_by": "LOI-1 (plane change)",
+    "free_return_targeted": true
+   },
+   "branch_discriminator": "retrograde lunar flyby (Moon-relative h_z < 0), perilune altitude band 100-200 km"
+  },
+  {
+   "name": "LOI-1",
+   "stage": "CSM",
+   "engine": "SPS",
+   "epoch_convention": "ignition",
+   "t_ignition_get_s": 273001.5751562492,
+   "t_cutoff_get_s": 273361.0051996806,
+   "duration_s": 359.4300434314064,
+   "ignition_rule": "LOI1_LEAD_FRAC 0.63 of the rocket-equation burn time for 825.0 m/s before perilune (lead 213.4 s; the consumer's rule)",
+   "dv_mag_mps": 883.2319613976229,
+   "tilt_deg": 6.665806056226823,
+   "yaw_deg": 5.244218884913506,
+   "plane_change_deg": 2.763897049696124,
+   "yaw_convention": "the tilted in-plane direction rotated out of plane toward +h_hat (the Moon-relative orbit normal at ignition) by yaw; solved so the capture orbit plane passes through Site 2 at the PDI epoch",
+   "tilt_convention": "frozen inertial direction = Moon-relative anti-velocity at ignition rotated in-plane about the Moon-relative orbit normal by tilt (positive toward radial-out)",
+   "thrust_dir_eci": [
+    -0.10672091347744624,
+    -0.8429732037516167,
+    -0.5272635246091605
+   ],
+   "thrust_dir_frame": "sim, inertially fixed through the burn",
+   "thrust_n": 93800.0,
+   "isp_s": 314.5,
+   "mass_before_kg": 43898.0,
+   "mass_after_kg": 32966.597428622365,
+   "sps_propellant_left_kg": 7481.5974286223645,
+   "state_at_tig": {
+    "get_s": 273001.5751562492,
+    "utc": "1969-07-19T17:22:02.535000",
+    "r_m": [
+     -394016136.3003866,
+     39230998.735883154,
+     16123620.149134962
+    ],
+    "v_mps": [
+     -84.41131294037372,
+     1373.9153255801334,
+     660.2242809656127
+    ],
+    "frame": "sim",
+    "tag": "AUTHORITATIVE"
+   },
+   "state_post": {
+    "get_s": 273361.0051996806,
+    "utc": "1969-07-19T17:28:01.965000",
+    "r_m": [
+     -393972068.35831386,
+     39600104.4889334,
+     16281893.919008978
+    ],
+    "v_mps": [
+     327.761630368407,
+     613.3049379062749,
+     183.20758481301732
+    ],
+    "frame": "sim",
+    "tag": "AUTHORITATIVE"
+   },
+   "goals": [
+    {
+     "name": "perilune_alt_km",
+     "target": 111.12,
+     "tolerance": 0.5,
+     "achieved": 111.13729167084816
+    },
+    {
+     "name": "apolune_alt_km",
+     "target": 314.28,
+     "tolerance": 0.5,
+     "achieved": 314.2586685696298
+    },
+    {
+     "name": "site_crosstrack_at_pdi_km",
+     "target": 0.0,
+     "tolerance": 1.0,
+     "achieved": 0.0004967363631224477,
+     "note": "the post-LOI-1 plane coasted to the PDI epoch (the residual); through LOI-2 and the loiter see trajectory_nodes.pdi_epoch.site_crosstrack_km"
+    }
+   ],
+   "reference_asflown": {
+    "dv_mps": 889.2,
+    "duration_s": 357.5,
+    "plane_change_deg": 4.08,
+    "note": "as flown LOI-1 carried a ~4.1 deg plane change (MSC-00171 Table 7-II); this burn carries 2.76 deg (the free-return arrival plane rotated onto the Site 2 plane)"
+   }
+  },
+  {
+   "name": "LOI-2",
+   "stage": "CSM",
+   "engine": "SPS",
+   "epoch_convention": "ignition",
+   "t_ignition_get_s": 288953.4678608773,
+   "t_cutoff_get_s": 288968.4446814387,
+   "duration_s": 14.976820561394561,
+   "ignition_rule": "at the perilune two revolutions after LOI-1 (the consumer's rule)",
+   "dv_mag_mps": 42.91074297266387,
+   "tilt_deg": 12.771728657820757,
+   "tilt_convention": "as LOI-1",
+   "thrust_dir_eci": [
+    -0.552230688621061,
+    -0.7641341398901094,
+    -0.3333770879942287
+   ],
+   "thrust_dir_frame": "sim, inertially fixed through the burn",
+   "thrust_n": 93800.0,
+   "isp_s": 314.5,
+   "mass_before_kg": 32966.597428622365,
+   "mass_after_kg": 32511.105023944914,
+   "sps_propellant_left_kg": 7026.105023944914,
+   "state_at_tig": {
+    "get_s": 288953.4678608773,
+    "utc": "1969-07-19T21:47:54.428000",
+    "r_m": [
+     -394504562.80543005,
+     26189138.849636678,
+     8966524.171945153
+    ],
+    "v_mps": [
+     573.5477602872422,
+     555.1285115504809,
+     154.0590536498074
+    ],
+    "frame": "sim",
+    "tag": "AUTHORITATIVE"
+   },
+   "state_post": {
+    "get_s": 288968.4446814387,
+    "utc": "1969-07-19T21:48:09.405000",
+    "r_m": [
+     -394495999.18354625,
+     26197155.90483201,
+     8968699.413458163
+    ],
+    "v_mps": [
+     569.9631981241873,
+     515.3496553304419,
+     136.37085921633116
+    ],
+    "frame": "sim",
+    "tag": "AUTHORITATIVE"
+   },
+   "goals": [
+    {
+     "name": "perilune_alt_km",
+     "target": 100.01,
+     "tolerance": 0.5,
+     "achieved": 100.02369795053825
+    },
+    {
+     "name": "apolune_alt_km",
+     "target": 122.23,
+     "tolerance": 0.5,
+     "achieved": 122.22327448782791
+    }
+   ],
+   "reference_asflown": {
+    "dv_mps": 48.6,
+    "orbit_nmi": "66.1 x 54.5 (planned 66 x 54)"
+   }
+  },
+  {
+   "name": "TEI",
+   "stage": "CSM",
+   "engine": "SPS",
+   "epoch_convention": "ignition",
+   "t_ignition_get_s": 487852.700395361,
+   "t_cutoff_get_s": 488007.10822438233,
+   "duration_s": 154.4078290213415,
+   "ignition_rule": "alignment peak nearest the planned GET 487422.3: 487852.7 s (+7.2 min), cos 0.9911; the EI-latitude hold (the as-flown return plane) is not reachable from this orbit with the corridor FPA and the planned EI epoch, solved in plane (no out-of-plane dv; EI latitude and zone crossrange screened)",
+   "planned_ignition_get_s": 487422.3,
+   "plane_mode": "in_plane",
+   "plane_mode_note": "no out-of-plane dv; the return plane is the orbit plane, the EI latitude and the zone crossrange are screened",
+   "dv_mag_mps": 1017.9683371074306,
+   "dv_ric_mps": {
+    "along_track": 1004.3924170399666,
+    "radial": 165.6967348678941,
+    "normal": 0.0,
+    "frame": "Moon-relative at ignition: along-track = h_hat x r_hat, radial = r_hat (outward), normal = h_hat; the burn direction is frozen inertially",
+    "ric_axes_sim": {
+     "along_track": [
+      -0.2017506103947576,
+      0.8954888644205505,
+      0.3967321324321179
+     ],
+     "radial": [
+      -0.979314005535364,
+      -0.19085250584315647,
+      -0.06722647972093238
+     ],
+     "normal": [
+      -0.015516757638879808,
+      0.4020883170550728,
+      -0.9154693962772298
+     ]
+    }
+   },
+   "thrust_dir_eci": [
+    -0.35846489820908617,
+    0.8524809233006454,
+    0.3804986099323212
+   ],
+   "thrust_dir_frame": "sim, inertially fixed through the burn",
+   "thrust_n": 93800.0,
+   "isp_s": 314.5,
+   "mass_before_kg": 16704.749597417136,
+   "mass_after_kg": 12008.719952564164,
+   "sps_propellant_left_kg": 2330.0753790919425,
+   "mass_note": "CM + SM dry + SPS left after LOI-1/2 minus consumables 5.65 kg/h x the ascent-insertion GET 448155.67 s (the consumer's ENABLE_CSM_CONSUMABLES rule: shed to the post-ascent/rendezvous GET, not to TEI ignition); LM jettison and the CSM separation burn not modelled",
+   "state_at_tig": {
+    "get_s": 487852.700395361,
+    "utc": "1969-07-22T05:02:53.660000",
+    "r_m": [
+     -346377548.09349066,
+     -144145535.52130097,
+     -82856187.87731172
+    ],
+    "v_mps": [
+     176.90313979041684,
+     684.0374953204707,
+     230.34980316078156
+    ],
+    "frame": "sim",
+    "tag": "AUTHORITATIVE"
+   },
+   "state_post": {
+    "get_s": 488007.10822438233,
+    "utc": "1969-07-22T05:05:28.068000",
+    "r_m": [
+     -346359691.6627012,
+     -143974086.32236087,
+     -82791548.39263357
+    ],
+    "v_mps": [
+     34.301853993188814,
+     1578.2877457734648,
+     625.5164247311142
+    ],
+    "frame": "sim",
+    "tag": "AUTHORITATIVE"
+   },
+   "goals": [
+    {
+     "name": "ei_fpa_deg",
+     "target": -6.495,
+     "tolerance": 0.01,
+     "achieved": -6.497668837989736
+    },
+    {
+     "name": "ei_get_s",
+     "target": 702185.7,
+     "tolerance": 30.0,
+     "achieved": 702185.646268473
+    },
+    {
+     "name": "dv_normal_mps",
+     "target": 0.0,
+     "tolerance": 0.1,
+     "achieved": 0.0,
+     "note": "in-plane TEI (plane_mode); the EI latitude and the zone crossrange are screened"
+    }
+   ],
+   "screened_ei_subpoint_lat_gd_deg": -9.64061900575225,
+   "ei_subpoint_lat_asflown_deg": -3.19,
+   "reference_asflown": {
+    "dv_mps_sp4029": 999.4392,
+    "dv_mps_afj_pad": 1000.84128,
+    "dv_lvlh_ftps": [
+     3201.1,
+     681.8,
+     -265.0
+    ],
+    "duration_s": 151.4,
+    "ignition_get_s": 487422.3
+   }
+  }
+ ],
+ "trajectory_nodes": {
+  "insertion": {
+   "get_s": 693.91438566253,
+   "utc": "1969-07-16T13:43:34.874000",
+   "r_m": [
+    311487.23890829406,
+    5526656.735696795,
+    3526160.5616486613
+   ],
+   "v_mps": [
+    -7784.103152738423,
+    346.51897610723785,
+    144.50770353910556
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 129750.83150749447
+  },
+  "tli_ignition": {
+   "get_s": 9877.933351710419,
+   "utc": "1969-07-16T16:16:38.893000",
+   "r_m": [
+    6508222.589979153,
+    -746534.1410659862,
+    -353039.32490976
+   ],
+   "v_mps": [
+    977.9043435468377,
+    6514.5223430813685,
+    4176.375706265142
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 128398.0
+  },
+  "tli_cutoff": {
+   "get_s": 10152.731347783605,
+   "utc": "1969-07-16T16:21:13.691000",
+   "r_m": [
+    6429736.544698439,
+    1368502.6943817867,
+    995281.5661977468
+   ],
+   "v_mps": [
+    -1696.2397460949458,
+    9077.945434539835,
+    5760.667801495195
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 59635.26352512566
+  },
+  "perilune": {
+   "get_s": 273215.0000213935,
+   "utc": "1969-07-19T17:25:35.960000",
+   "r_m": [
+    -394002464.93004555,
+    39526711.49609862,
+    16265498.672425322
+   ],
+   "v_mps": [
+    215.482958607637,
+    1384.4609124219498,
+    662.8436774775422
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "altitude_m": 113899.92171369214,
+   "lunar": {
+    "altitude_m": 113899.92171369214,
+    "speed_moon_relative_mps": 2542.161638350425,
+    "perilune_alt_m": 113899.92171369214,
+    "apolune_alt_m": null,
+    "eccentricity": 1.4392462586982435,
+    "incl_lunar_equator_deg": 175.09023111057854,
+    "selenographic_lat_deg": 0.8623716301622191,
+    "selenographic_lon_deg": 173.60286588819417,
+    "lunar_axes": "IAU-2009 pole and prime meridian with physical librations at JD_TT, frozen liftoff precession"
+   },
+   "v_inf_mps": 1078.771272174755,
+   "site_crosstrack_km": 61.56379677490963
+  },
+  "free_return_ei": {
+   "get_s": 522412.48049321485,
+   "utc": "1969-07-22T14:38:53.441000",
+   "r_m": [
+    5683561.189534892,
+    -2535697.3264163355,
+    -1875663.156557417
+   ],
+   "v_mps": [
+    4202.870422181892,
+    7598.821056634478,
+    6778.434924817672
+   ],
+   "frame": "sim",
+   "tag": "REFERENCE",
+   "fpa_deg": -6.491292789525456,
+   "note": "the ballistic continuation of the TLI with no LOI (the free-return abort spine): descending crossing of the 400 kft shell"
+  },
+  "loi1_ignition": {
+   "get_s": 273001.5751562492,
+   "utc": "1969-07-19T17:22:02.535000",
+   "r_m": [
+    -394016136.3003866,
+    39230998.735883154,
+    16123620.149134962
+   ],
+   "v_mps": [
+    -84.41131294037372,
+    1373.9153255801334,
+    660.2242809656127
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 43898.0
+  },
+  "loi1_cutoff": {
+   "get_s": 273361.0051996806,
+   "utc": "1969-07-19T17:28:01.965000",
+   "r_m": [
+    -393972068.35831386,
+    39600104.4889334,
+    16281893.919008978
+   ],
+   "v_mps": [
+    327.761630368407,
+    613.3049379062749,
+    183.20758481301732
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 32966.597428622365,
+   "lunar": {
+    "altitude_m": 111808.7030275492,
+    "speed_moon_relative_mps": 1670.2213425938687,
+    "perilune_alt_m": 111137.2916708435,
+    "apolune_alt_m": 314258.66856963513,
+    "eccentricity": 0.052079787520796075,
+    "incl_lunar_equator_deg": 177.7912389117943,
+    "selenographic_lat_deg": 1.009408695541467,
+    "selenographic_lon_deg": 166.7105973027168,
+    "lunar_axes": "IAU-2009 pole and prime meridian with physical librations at JD_TT, frozen liftoff precession"
+   }
+  },
+  "loi2_ignition": {
+   "get_s": 288953.4678608773,
+   "utc": "1969-07-19T21:47:54.428000",
+   "r_m": [
+    -394504562.80543005,
+    26189138.849636678,
+    8966524.171945153
+   ],
+   "v_mps": [
+    573.5477602872422,
+    555.1285115504809,
+    154.0590536498074
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 32966.597428622365
+  },
+  "loi2_cutoff": {
+   "get_s": 288968.4446814387,
+   "utc": "1969-07-19T21:48:09.405000",
+   "r_m": [
+    -394495999.18354625,
+    26197155.90483201,
+    8968699.413458163
+   ],
+   "v_mps": [
+    569.9631981241873,
+    515.3496553304419,
+    136.37085921633116
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 32511.105023944914,
+   "lunar": {
+    "altitude_m": 110424.29525782866,
+    "speed_moon_relative_mps": 1629.5418213431035,
+    "perilune_alt_m": 100023.6979505471,
+    "apolune_alt_m": 122223.27448781882,
+    "eccentricity": 0.006004677977523806,
+    "incl_lunar_equator_deg": 177.8068954092467,
+    "selenographic_lat_deg": 1.296968260824257,
+    "selenographic_lon_deg": 155.8645185473336,
+    "lunar_axes": "IAU-2009 pole and prime meridian with physical librations at JD_TT, frozen liftoff precession"
+   }
+  },
+  "lunar_orbit": {
+   "perilune_alt_m": 100023.69795053825,
+   "apolune_alt_m": 122223.2744878279,
+   "inclination_deg": 177.80689540924686,
+   "period_s": 7130.230985136709,
+   "inclination_note": "to the lunar equator; 180 = retrograde equatorial",
+   "tag": "AUTHORITATIVE"
+  },
+  "pdi_epoch": {
+   "get_s": 369074.0,
+   "utc": "1969-07-20T20:03:14.960000",
+   "r_m": [
+    -385265872.9853367,
+    -42918359.526936345,
+    -28626573.430065285
+   ],
+   "v_mps": [
+    1735.6979452223904,
+    -1323.138472385987,
+    -694.2498203117465
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "site_crosstrack_km": -0.7982718364063379,
+   "lunar": {
+    "altitude_m": 115755.86008085404,
+    "speed_moon_relative_mps": 1624.6446120961302,
+    "perilune_alt_m": 102410.37857250404,
+    "apolune_alt_m": 118913.1917578273,
+    "eccentricity": 0.0044648975802094905,
+    "incl_lunar_equator_deg": 177.89862670424583,
+    "selenographic_lat_deg": 1.6847734555574405,
+    "selenographic_lon_deg": 56.76980831817514,
+    "lunar_axes": "IAU-2009 pole and prime meridian with physical librations at JD_TT, frozen liftoff precession"
+   },
+   "note": "the CSM orbit at the site-plane epoch (SITE_PLANE_EPOCH_S); descent, surface stay and rendezvous are the consumer's"
+  },
+  "tei_ignition": {
+   "get_s": 487852.700395361,
+   "utc": "1969-07-22T05:02:53.660000",
+   "r_m": [
+    -346377548.09349066,
+    -144145535.52130097,
+    -82856187.87731172
+   ],
+   "v_mps": [
+    176.90313979041684,
+    684.0374953204707,
+    230.34980316078156
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 16704.749597417136
+  },
+  "tei_cutoff": {
+   "get_s": 488007.10822438233,
+   "utc": "1969-07-22T05:05:28.068000",
+   "r_m": [
+    -346359691.6627012,
+    -143974086.32236087,
+    -82791548.39263357
+   ],
+   "v_mps": [
+    34.301853993188814,
+    1578.2877457734648,
+    625.5164247311142
+   ],
+   "frame": "sim",
+   "tag": "AUTHORITATIVE",
+   "mass_kg": 12008.719952564164
+  },
+  "ei": {
+   "get_s": 702185.646268473,
+   "utc": "1969-07-24T16:35:06.606000",
+   "jd_utc": 2440427.1910486836,
+   "radius_m": 6500057.000000129,
+   "altitude_m": 121920.00000012945,
+   "shell_radius_m": 6500057.0,
+   "speed_mps": 11032.336285154595,
+   "speed_earth_relative_mps": 10840.172744623422,
+   "fpa_deg": -6.497668837989736,
+   "fpa_target_deg": -6.495,
+   "fpa_hard_deg": [
+    -7.5,
+    -5.5
+   ],
+   "fpa_in_corridor": true,
+   "subpoint_lat_gc_deg": -9.577280410026107,
+   "subpoint_lat_gd_deg": -9.64061900575225,
+   "subpoint_lon_deg": -179.83242153968766,
+   "ground_azimuth_deg": 23.32001289748715,
+   "inertial_azimuth_deg": 25.564040865400838,
+   "entry_track_inclination_deg": 67.0237995965523,
+   "zone": {
+    "lat_gd_deg": 13.3879,
+    "lat_gc_deg": 13.301472124032994,
+    "lon_deg": -169.2565,
+    "basis": "[primary] USS Hornet primary recovery zone, 13.3879 N 169.2565 W (consumer APOLLO_SPLASH_*)"
+   },
+   "downrange_to_zone_km": 2798.2510666369067,
+   "crossrange_to_zone_km": 71.39597573781641,
+   "downrange_target_km": 2420.0,
+   "downrange_status": "SCREENED: target is a placeholder (constants.py)",
+   "entry_conic_perigee_radius_m": 6416183.975621251,
+   "entry_conic_perigee_alt_m": 38046.97562125139,
+   "return_arc_inclination_deg": 64.8173557745279,
+   "earth_prograde": true,
+   "r_m": [
+    6288123.704586225,
+    1241239.2874937088,
+    -1081464.890901968
+   ],
+   "v_mps": [
+    -509.6998023995577,
+    4720.750097469992,
+    9958.271362912823
+   ],
+   "ei_state_sha256_16": "df6c9d1e5d3e1516",
+   "frame": "delivery frame (mean equinox/equator of liftoff, frozen); ground track via GMST0 + w t",
+   "conventions": "geocentric subpoint; D/C on the R_T7 sphere with geocentric latitudes; C > 0 right of track",
+   "tag": "AUTHORITATIVE",
+   "r": [
+    6288123.704586225,
+    1241239.2874937088,
+    -1081464.890901968
+   ],
+   "v": [
+    -509.6998023995577,
+    4720.750097469992,
+    9958.271362912823
+   ],
+   "subpoint_lat_deg": -9.64061900575225,
+   "subpoint_lat_convention": "geodetic (geocentric also given)"
+  }
+ },
+ "targets": {
+  "perilune_alt_m": 113900.0,
+  "perilune_get_s": 273215.0,
+  "pericynthion_lon_deg_screened": 173.57,
+  "landing_site": {
+   "name": "Site 2",
+   "lat_deg": 0.75,
+   "lon_deg": 23.62,
+   "convention": "selenographic"
+  },
+  "site_plane_epoch_get_s": 369074.0,
+  "doi_get_s": 366017.5,
+  "lunar_orbit": {
+   "loi1_nmi": [
+    60.0,
+    169.7
+   ],
+   "loi2_nmi": [
+    54.0,
+    66.0
+   ]
+  },
+  "tei_plan_get_s": 487422.3,
+  "ei": {
+   "shell_radius_m": 6500057.0,
+   "fpa_target_deg": -6.495,
+   "fpa_solve_tol_deg": 0.05,
+   "fpa_hard_deg": [
+    -7.5,
+    -5.5
+   ],
+   "get_s": 702185.7,
+   "subpoint_lat_gd_deg": -3.19
+  },
+  "recovery_target": {
+   "lat_deg": 13.3879,
+   "lon_deg": -169.2565,
+   "convention": "geodetic",
+   "downrange_km": 2420.0,
+   "downrange_status": "SCREENED, placeholder target",
+   "crossrange_km": 0.0,
+   "crossrange_status": "SCREENED",
+   "achieved_downrange_km": 2798.2510666369067,
+   "achieved_crossrange_km": 71.39597573781641
+  }
+ },
+ "free_return_screen": {
+  "status": "ok",
+  "t_ei_get_s": 522412.48049321485,
+  "gamma_ei_deg": -6.491292789525456,
+  "keepout_violated": false,
+  "gamma_corridor_deg": [
+   -7.5,
+   -5.5
+  ],
+  "gamma_in_corridor": true,
+  "return_perigee_alt_m": 37857.62103817519,
+  "t_return_perigee_get_s": 522546.3104510894,
+  "return_perigee_target_alt_m": 37876.2329790853,
+  "return_conic_sma_m": 311979139.14205265,
+  "earth_prograde_return": true,
+  "retrograde_at_moon": true,
+  "incl_lunar_equator_deg": 175.09023111057854,
+  "perilune_alt_m": 113899.92171369214,
+  "ca_lat_deg": 0.8623716301622191,
+  "ca_lon_deg": 173.60286588819417,
+  "v_inf_mps": 1078.771272174755
+ },
+ "ei_screen": {
+  "fpa_in_corridor": true,
+  "fpa_error_deg": -0.0026688379897361614,
+  "earth_prograde": true,
+  "entry_track_inclination_lt_90": true,
+  "crossrange_to_zone_km": 71.39597573781641,
+  "crossrange_within_solve_tol": false,
+  "downrange_to_zone_km": 2798.2510666369067,
+  "downrange_status": "SCREENED: target is a placeholder (constants.py)"
+ },
+ "ledgers": {
+  "sivb_propellant_at_tli_kg": 71200.0,
+  "sivb_propellant_left_after_tli_kg": 2437.263525125658,
+  "sps_usable_kg": 18413.0,
+  "sps_after_loi1_kg": 7481.5974286223645,
+  "sps_after_loi2_kg": 7026.105023944914,
+  "sps_after_tei_kg": 2330.0753790919425,
+  "consumables_shed_at_tei_kg": 703.3554265277778,
+  "consumables_shed_get_ref_s": 448155.67,
+  "no_mcc_debit": true
+ },
+ "solve_record": {
+  "tli": {
+   "iterations": 1,
+   "residuals": {
+    "h_peri_km": -7.828630786389112e-05,
+    "fr_perigee_km": -0.01861194091010839,
+    "t_peri_min": 3.565587879468997e-07,
+    "site_xtrack_km": 61.56379677490963,
+    "ca_lon_km": 0.9966038447130549
+   },
+   "jacobian_singular_values": [
+    35761.86999637926,
+    288.0882108244209,
+    163.04564074067576
+   ],
+   "phase_pinned": false,
+   "azimuth_solved": true
+  },
+  "loi1": {
+   "dv_mps": 883.2319613976229,
+   "tilt_deg": 6.665806056226823,
+   "yaw_deg": 5.244218884913506,
+   "plane_change_deg": 2.763897049696124
+  },
+  "loi2": {
+   "dv_mps": 42.91074297266387,
+   "tilt_deg": 12.771728657820757
+  },
+  "tei": {
+   "iterations": 2,
+   "residuals": {
+    "fpa_deg": -0.0026688379897361614,
+    "t_ei_min": -0.0008955254491108159,
+    "dv_normal_mps": 0.0
+   },
+   "jacobian_singular_values": [
+    452.76604978548164,
+    9.861738774731233,
+    2.3751422346791933
+   ]
+  }
+ },
+ "provenance": {
+  "classes": {
+   "primary": "published primary source (named)",
+   "secondary": "secondary source (named)",
+   "derived": "computed from a primary quantity, arithmetic shown",
+   "measured": "measured on a model or artifact (named)",
+   "estimate": "estimate, flagged as such",
+   "consumer": "LOCAL EXTENSION: the consumer's (apollo11.py) own model value, matched so the nominal re-flies",
+   "convention": "LOCAL EXTENSION: a declared convention of the interface",
+   "pinned": "LOCAL EXTENSION: a user directive",
+   "outcome": "LOCAL EXTENSION: a solve result, never a target"
+  },
+  "quantities": {
+   "MU_EARTH, R_EARTH, J2, J3-J6, OMEGA_E, MU_MOON, R_MOON, MU_SUN, DELTA_T_S": "[consumer]",
+   "lunar figure (GRGM1200A table, J2_MOON, C22_MOON, R_MOON_GRAV, tiers)": "[consumer] table copied verbatim; [secondary] GRAIL",
+   "EI shell 400,000 ft": "[primary]",
+   "GO_EI_FPA_TARGET_DEG -6.495": "[primary] nominal Apollo entry angle; hard corridor -6.5 +/- 1.0 [primary]",
+   "pad LC-39A": "[primary]",
+   "insertion state": "[consumer] IGM ascent capture",
+   "launch azimuth": "[outcome] solved for zero TLI yaw (seed 72.465 [consumer]; flown 72.058 [primary])",
+   "TLI seed (181.0 deg, 10,884.048 m/s, 0.518, 4.145 deg)": "[consumer] launch_tli_preset.json, seed only",
+   "PERILUNE_AIM_ALT_M 113.9 km, PERILUNE_AIM_GET_S 75:53:35": "[primary] MSC-00171 Table 7-III",
+   "SITE2": "[primary]",
+   "SITE_PLANE_EPOCH_S, LUNAR_DOI_GET_S": "[consumer]",
+   "LOI targets 60.0 x 169.7 / 54 x 66 nmi": "[consumer] MSC-00171 section 5 planned orbits",
+   "LOI1_LEAD_FRAC 0.63": "[primary] MSC-00171 Tables 7-II/7-III",
+   "vehicle masses, SPS thrust 93,800 N (+2.85% calibrated), Isp": "[consumer]/[primary] see constants.py",
+   "S-IVB dry 13,300 kg": "[consumer] (stage + IU)",
+   "TEI_PLAN_GET_S, EI_GET_ASFLOWN_S, EI lat/lon, EI speed": "[primary] MSC-00171 / SP-4029",
+   "CSM_CONSUMABLES_RATE_KGPH": "[consumer]",
+   "CSM_CONSUMABLES_GET_REF_S 124:29:15.67": "[primary] SP-4029 ascent-stage orbit insertion; the consumer's rule sheds to its post-ascent GET (124.499 h in its nominal)",
+   "recovery zone 13.3879 N 169.2565 W": "[primary] USS Hornet zone, consumer APOLLO_SPLASH_*",
+   "GO_D_TARGET_KM 2420": "[estimate] PLACEHOLDER (Artemis NOGO number); SCREENED"
+  }
+ },
+ "disclosures": [
+  "Liftoff epoch equals the consumer's JD_LAUNCH literal (13:32:00.960 UTC) so the captured insertion and the re-fly share one epoch; the exact 13:32:00.000 build needs the insertion re-captured at that JD.",
+  "Precession of date is evaluated exactly at every ephemeris call, as the re-homed consumer does since 2026-10-25 (its original memoised the matrix on 52.6-minute steps filled at the first query: Moon 0 to 9.6 m behind, 1.9 km at TEI ignition over the 55 h LOI-2 -> TEI coast); with the exact matrix the consumer reproduces this package's lunar coasts to 3.4 m.",
+  "No midcourse corrections are modelled; MCC-2 (6.4 m/s as flown) and MCC-5 are the consumer's in-flight correctors.",
+  "LM jettison and the CSM separation burn before TEI are not modelled; the TEI state is the post-LOI-2 CSM orbit propagated in the full model.",
+  "The TLI is a free return (ballistic continuation enters at -6.49 deg on the 400 kft shell, return perigee 38 km) as Apollo 11 flew; the Site 2 plane is LOI-1's plane change (2.76 deg, as flown 4.1 deg), and the lunar parking orbit sits 2.19 deg from retrograde-equatorial (Apollo: 1.25 deg).",
+  "The TLI arrival-phase pin (pericynthion longitude) is not solved (ill-posed with ignition angle and pitch both rotating the departure); the longitude is screened.",
+  "The recovery zone is screened: the zone cross-track residual is ill-posed with perigee and time of flight pinned (zone near the Earth-Moon axis at entry). The TEI is solved in plane: the as-flown EI latitude is not reachable from the free-return capture orbit with the corridor FPA and the planned EI epoch (the hold bottoms out 0.4 deg / 2 min off against the no-entry edge with ~190 m/s out of plane vs the as-flown 81); EI latitude -9.64 deg (as flown -3.19) and zone crossrange +71 km are screened. GO_D_TARGET_KM is a placeholder.",
+  "The free-return EI flight-path angle is solved on the return perigee radius of the osculating return conic (1 km of perigee ~ 0.04 deg); its corridor (-6.5 +/- 1 deg) is screened in free_return_screen.",
+  "Descent, surface stay, ascent and rendezvous are the consumer's; the package gives the CSM orbit at the site-plane epoch and the slot's DOI GET.",
+  "Entry (guidance to the zone) is the consumer's; the package gives the EI state and geometry."
+ ],
+ "notes": [],
+ "manifest": {
+  "inputs_sha256": {
+   "validation/consumer_insertion_capture.json": "71814573fef15b782e230d664245176a5e512977d4041db15e90e6c4712c406f",
+   "validation/consumer_parity_capture.json": "fc090686e99e2822727287efa0870ac020dbc2cb687b241dc51cef3f12156436"
+  },
+  "kernels_sha256": {
+   "naif0012.tls": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b",
+   "de440.bsp": "a4ce9bf9b3282becc9f4b2ac3cebe03a2ae7599981aabd7265fd8482fff7c4b5"
+  },
+  "coefficients_sha256": "ca31a1ed4fada5da84f5593e0b57d464a156a92e4ddc58bc62e429427c488672",
+  "package_sha256": "3a3a4b0e1d4ac3b910d777417ea5c5b8679b7486066d5cfb4d83e5a3b285c5e9"
+ }
+}

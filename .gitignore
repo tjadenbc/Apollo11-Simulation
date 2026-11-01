@@ -11,18 +11,18 @@ venv/
 # single definitive run this release documents. New dev runs are ignored by
 # default; add another `!outputs/<name>/` line to publish one.
 outputs/*
-!outputs/final/
+!outputs/cluster_fleet10k_jul16_s37_def9/
 
 # Within the published run keep the summary products (CSVs, nominal trajectory,
-# targeting JSONs, dashboard, realism audit, figures) but exclude the bulky and
+# targeting JSONs, dashboard, figures, heating replay) but exclude the bulky and
 # derived artifacts: the per-trial debug JSONs (distributed as the release-asset
 # tarball instead), the tarball itself, the review PDFs, the claude.ai artifact
 # fragments, and the Artemis-hosted comparison copies.
-outputs/final/trials/
-outputs/final/apollo11_final_trials.tar.gz
-outputs/final/*.pdf
-outputs/final/*_artifact.html
-outputs/final/*comparison*
+outputs/cluster_fleet10k_jul16_s37_def9/trials/
+outputs/cluster_fleet10k_jul16_s37_def9/trials.tar.gz
+outputs/cluster_fleet10k_jul16_s37_def9/*.pdf
+outputs/cluster_fleet10k_jul16_s37_def9/*_artifact.html
+outputs/cluster_fleet10k_jul16_s37_def9/*comparison*
 
 # --- Generated documents ---
 # Build artifacts of the manuscript; regenerate rather than track them.
@@ -88,3 +88,10 @@ generate_audit.py
 entry_heating_validation.json
 entry_heating_boundary.json
 outputs/final/heat_partial/
+
+# --- Released despite the local-only patterns above (v4.0.0) ---
+# The verification suite of the paper's Section 4.3 and the run's corridor-
+# boundary sweep ship with the release.
+!test_verification.py
+!tests/test_*.py
+!outputs/cluster_fleet10k_jul16_s37_def9/entry_heating_boundary.json

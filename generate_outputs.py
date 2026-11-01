@@ -7,6 +7,14 @@ Reads results.csv and the nominal trajectory, produces:
   - 7 plots (PNG)
   - dashboard.html (consolidates everything)
   - Copy of apollo11.py source
+
+SIM-REPO COPY (2026-10-26, copied from the read-only original project): adds the
+splash map (splash_map.png, the Artemis II dashboard's splashdown figure: every
+splash around the recovery zone it aimed for, km east / north) and its dashboard
+section "Splashdowns around the recovery zone". Everything else is the original's.
+Run from the sim repo with the package bound, e.g.
+  APOLLO_DELIVERED_PACKAGE=nominal_packages/apollo11_nominal_package.json \
+      venv/bin/python generate_outputs.py <run dir>
 """
 import os
 import sys
@@ -424,9 +432,10 @@ FAILURE_EXPLANATIONS = {
         "The Command Module came down on land rather than the ocean. Apollo's CM "
         "was designed for a water landing only — no landing retro-rockets, impact "
         "attenuation tuned for water — so a land impact means the capsule is not "
-        "recovered intact and everyone aboard is lost. Very rare: only grossly "
-        "rev-slipped returns, whose entry ground track has rotated onto a "
-        "continent or island, come down on land."),
+        "recovered intact and everyone aboard is lost. Very rare: the recovery "
+        "zone follows each return's own entry ground track, so only a return "
+        "that comes home far off the planned timeline (for example a late "
+        "scan-fallback TEI) can carry its zone over a continent or island."),
 }
 
 
@@ -552,7 +561,7 @@ def phase_timing_stats(outdir):
     return rows
 
 
-def build_crosscheck_rows(nominal_results, df):
+def build_crosscheck_rows(nominal_results, df, outdir=None):
     """Data-driven Apollo cross-check rows, computed from nominal_results + df
     (no hardcoded sim values, so the table can't drift from the actual run).
     Each comparable row colors by |error| vs APOLLO_ACTUALS (green <5%,
@@ -608,6 +617,30 @@ def build_crosscheck_rows(nominal_results, df):
         rows.insert(1, ("Parking orbit (pre-TLI)", f"{pe:.0f} × {apo:.0f} km",
                         "184 × 186 km", color, status))
 
+    # Package-build rows (sim repo): the design the solver delivered, against the
+    # flown values. Grey = a design difference the package discloses, not an error.
+    pk = _package_info(outdir)
+    _grey = "#6e6e73"
+    if pk["az"] == pk["az"]:
+        rows.insert(0, ("Launch azimuth", f"{pk['az']:.3f}°", "72.058°", _grey,
+                        "package design: solved for a zero-yaw (coplanar) TLI"))
+    if pk["incl"] == pk["incl"]:
+        _di = abs(pk["incl"] - 32.521)
+        rows.insert(2, ("Parking-orbit inclination", f"{pk['incl']:.3f}°", "32.521°",
+                        "#2D5A3D" if _di < 0.05 else "#F18F01",
+                        f"✓ within {_di:.3f}°" if _di < 0.05 else f"{_di:.2f}° off"))
+    if isinstance(N.get("loi1_plane_change_deg"), (int, float)) and pk["site_lat"] is not None:
+        rows.append(("LOI-1 plane change", f"{N['loi1_plane_change_deg']:.2f}°", "~4.1°",
+                     _grey, f"package design: LOI-1 puts the orbit through {pk['site_name']}"))
+    if "land_site_downrange_km" in df.columns and df["land_site_downrange_km"].notna().any():
+        _ld = pd.to_numeric(df["land_site_downrange_km"], errors="coerce")
+        _lx = pd.to_numeric(df.get("land_site_crossrange_km"), errors="coerce").fillna(0)
+        _lr = np.hypot(_ld, _lx)[_ld.notna()]
+        rows.append((f"Landing miss from {pk['site_name']} (MC)",
+                     f"~{_lr.median():.1f} km median (max {_lr.max():.1f})",
+                     "~6.4 km (Tranquility Base, manual overfly)", _grey,
+                     "site targeting on the true state: no lunar-orbit navigation error"))
+
     # Splash position (nominal) vs Apollo actual — scored by ground distance,
     # axis by axis (percent error is meaningless for coordinates).
     if isinstance(N.get("splash_lat"), (int, float)):
@@ -626,9 +659,9 @@ def build_crosscheck_rows(nominal_results, df):
         rows.append(("Splash latitude (nominal)", f"{N['splash_lat']:.1f}°",
                      f"{APOLLO_ACTUALS['splash_lat']:.1f}°", c,
                      s.rstrip(" —")))
-        c, s = _coord_status(_dlon_km, "recovery-zone longitude, set by the "
-                             "return-leg timeline + Earth's rotation — distinct "
-                             "from the km-scale guidance accuracy below")
+        c, s = _coord_status(_dlon_km, "the package's recovery zone (downrange a "
+                             "placeholder, crossrange screened), distinct from the "
+                             "km-scale guidance accuracy below")
         rows.append(("Splash longitude (nominal)", f"{N['splash_lon']:.1f}°",
                      f"{APOLLO_ACTUALS['splash_lon']:.1f}°", c, s))
 
@@ -643,8 +676,9 @@ def build_crosscheck_rows(nominal_results, df):
                      f"~{med:.1f} km median (max {mx:.1f})",
                      "~3 km (as flown)",
                      "#2D5A3D" if med < 5 else "#F18F01",
-                     "✓ guided entry, per-opportunity zones" if med < 5
-                     else "guided entry, per-opportunity zones"))
+                     "✓ guided entry; zone 2,784 km along each trial's own ground track"
+                     if med < 5
+                     else "guided entry; zone 2,784 km along each trial's own ground track"))
 
     # Nominal miss from its recovery zone
     if isinstance(N.get("splash_miss_km"), (int, float)):
@@ -752,15 +786,71 @@ def _run_uses_jpl_ephemeris(outdir=None):
         return False
 
 
+def _package_info(outdir):
+    """The delivered package this run flew (sim repo): the fields the prose quotes,
+    from <outdir>/delivered_package.json (the pin's copy) and run_config.json.
+    Missing files leave the fields None / NaN so the page still renders."""
+    p, rc = {}, {}
+    for name, dst in (("delivered_package.json", p), ("run_config.json", rc)):
+        try:
+            with open(os.path.join(outdir or ".", name)) as f:
+                dst.update(json.load(f))
+        except Exception:
+            pass
+    lb = p.get("launch_block", {})
+    tg = p.get("targets", {})
+    fr = p.get("free_return_screen", {})
+    rt = tg.get("recovery_target") or {}
+    site = tg.get("landing_site") or {}
+    ei = tg.get("ei") or {}
+
+    def num(v):
+        return float(v) if isinstance(v, (int, float)) else float("nan")
+    return {
+        "label": p.get("label", "(no package copy in the run directory)"),
+        "mission": p.get("mission", ""),
+        "sha": rc.get("DELIVERED_PACKAGE_SHA256", ""),
+        "az": num(lb.get("azimuth_deg")), "incl": num(lb.get("inclination_deg")),
+        "site_name": site.get("name") or "the landing site",
+        "site_lat": site.get("lat_deg"), "site_lon": site.get("lon_deg"),
+        "rt_lat": num(rt.get("lat_deg")), "rt_lon": num(rt.get("lon_deg")),
+        "rp_km": num(fr.get("return_perigee_alt_m")) / 1000.0,
+        "fr_gamma": num(fr.get("gamma_ei_deg")),
+        "ei_lat_plan": num(ei.get("subpoint_lat_gd_deg")),
+        "rc": rc,
+    }
+
+
+def _amendment(outdir):
+    """<outdir>/amendment.json (sim repo): the listed trials were re-flown on newer code
+    and swapped into results.csv; None for an unamended run."""
+    try:
+        with open(os.path.join(outdir or ".", "amendment.json")) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _reaimed(df):
+    """Rows whose recovery zone ENABLE_WATER_ZONE_REAIM moved to water."""
+    if "recovery_zone_reaim" not in df.columns:
+        return df.iloc[0:0]
+    return df[df["recovery_zone_reaim"].astype(str) == "water"]
+
+
 def known_limitations(nominal_results, df, outdir=None):
     """Single source of truth for the Known Limitations, with key numbers
     pulled from nominal_results + df so the summary and the dashboard stay
     consistent with the actual run. Returns a list of (title, body) in plain
     text (renderers add their own formatting). `outdir` (optional) lets the
     ephemeris sentence read the run's own run_config.json, so a DE440 run is
-    described as DE440 and an analytic-series run as such."""
+    described as DE440 and an analytic-series run as such.
+    SIM-REPO REWRITE (2026-10-26): the prose describes a PACKAGE run — the
+    solver's delivered nominal re-flown by the consumer — with the package's
+    numbers read from <outdir>/delivered_package.json (see _package_info)."""
     N = nominal_results
     import math
+    pk = _package_info(outdir)
     _jpl = _run_uses_jpl_ephemeris(outdir)
     _ephem_txt = (
         "the JPL DE440 numerical lunar ephemeris (ENABLE_JPL_EPHEMERIS, read "
@@ -773,96 +863,165 @@ def known_limitations(nominal_results, df, outdir=None):
         v = N.get(k)
         return v if isinstance(v, (int, float)) else float("nan")
 
+    def col(c):
+        return (pd.to_numeric(df[c], errors="coerce") if c in df.columns
+                else pd.Series(np.nan, index=df.index))
+
+    def med(c):
+        s = col(c).dropna()
+        return float(s.median()) if len(s) else float("nan")
+
+    def count_eq(c, v):
+        return int((df[c] == v).sum()) if c in df.columns else 0
+
     tei = g("tei_dv_ms")
-    # Share of returns whose aimed recovery zone slipped >100 km. Computed, not
-    # hardcoded: a stale literal here silently contradicted the paper.
-    _rzc = df.get("recovery_zone_displacement_km")
-    _rz_gt100 = (100.0 * (_rzc.dropna() > 100.0).mean()) if _rzc is not None and _rzc.notna().any() else float("nan")
+    # Where each trial's aimed zone sits relative to the package's recovery target.
+    _rzc = col("recovery_zone_displacement_km").dropna()
+    _rz_med = float(_rzc.median()) if len(_rzc) else float("nan")
+    _rz_gt100 = 100.0 * float((_rzc > 100.0).mean()) if len(_rzc) else float("nan")
     pg = g("max_g")
     absmiss = g("splash_miss_km")
-    # Guidance accuracy = miss vs the aimed per-opportunity recovery zone
-    # (splash_miss_km). The legacy splash_dispersion_km column (scatter about
-    # the nominal point) is no longer written and is NOT this metric, so fall
-    # back to splash_miss_km rather than rendering NaN.
-    if "splash_miss_km" in df.columns and len(df["splash_miss_km"].dropna()):
-        disp = float(df["splash_miss_km"].median())
-        disp_max = float(df["splash_miss_km"].max())
-    else:
-        disp = float("nan")
-        disp_max = float("nan")
+    # Guidance accuracy = miss vs the aimed per-trial recovery zone (splash_miss_km).
+    _sm = col("splash_miss_km").dropna()
+    disp = float(_sm.median()) if len(_sm) else float("nan")
+    disp_max = float(_sm.max()) if len(_sm) else float("nan")
+    _far = col("splash_miss_km") > 25.0
+    _far_n = int(_far.sum())
+    _far_fpa = col("fpa_at_entry_deg")[_far].dropna()
+    _far_fb = int((_far & (df["tei_ignition_source"] == "scan_fallback_no_entry")).sum()) \
+        if "tei_ignition_source" in df.columns else 0
     fpa_ei = g("fpa_at_entry_deg")
     slat, slon = g("splash_lat"), g("splash_lon")
-    try:
-        med_g = float(pd.to_numeric(df["max_g"], errors="coerce").median())
-    except Exception:
-        med_g = float("nan")
+    med_g = med("max_g")
     _dln = abs(((slon - (-169.15)) + 180.0) % 360.0 - 180.0) if slon == slon else float("nan")
     dlon_km_ap = (_dln * 111.0 * math.cos(math.radians(slat))) if slat == slat else float("nan")
     _ew = "E" if (slon == slon and slon >= 0) else "W"
+    _rt_ew = "E" if pk["rt_lon"] >= 0 else "W"
     pe = N.get("launch_parking_perigee_km")
     apo = N.get("launch_parking_apogee_km")
     park = (f"~{pe:.0f} × {apo:.0f} km"
             if isinstance(pe, (int, float)) and isinstance(apo, (int, float))
             else "~185 × 185 km")
-    tlmcc_dv = (float(df["mcc_dv_ms"].median())
-                if "mcc_dv_ms" in df.columns and len(df["mcc_dv_ms"].dropna())
-                else float("nan"))
-    # Prefer the MSFN-era EXECUTED-translunar-burn column: the legacy
-    # mcc_n_burns key is written by the translunar chain then OVERWRITTEN by
-    # the trans-earth chain on every trial that reaches the return leg (so it
-    # was actually the trans-earth OPPORTUNITY count, waived included).
-    if "tlmcc_n_exec" in df.columns and len(df["tlmcc_n_exec"].dropna()):
-        tlmcc_n = float(df["tlmcc_n_exec"].median())
+    temcc_dv = med("mcc_total_dv_ms")
+    _tl = col("tlmcc_n_exec").dropna()
+    _tl_one = 100.0 * float((_tl == 1).mean()) if len(_tl) else float("nan")
+    _te_n = med("temcc_n_exec")
+    _sivb = count_eq("mission_failure", "tli_s_ivb_restart_failure")
+    try:
+        import apollo11 as _a11
+        _p_sivb = float(getattr(_a11, "S_IVB_RESTART_FAILURE_PROB", float("nan")))
+        _soft = float(getattr(_a11, "PDI_TIG_OFFSET_SOFT_S", 60.0))
+    except Exception:
+        _p_sivb, _soft = float("nan"), 60.0
+    _sivb_on = bool(pk["rc"].get("ENABLE_SIVB_RESTART_FAILURE", False))
+    _sivb_txt = (f" With ENABLE_SIVB_RESTART_FAILURE on, the TLI restart itself fails at "
+                 f"{100*_p_sivb:.1f}% per restart (Jeffreys on 0 of 10 post-fix restarts; "
+                 f"{_sivb:,} trials here), the largest single failure mode."
+                 if _sivb_on else "")
+    _sm_share = (100.0 * float(df["mission_failure"].fillna("").astype(str)
+                               .str.startswith("sm_failure").mean())
+                 if "mission_failure" in df.columns else float("nan"))
+    # TEI ignition: the package's delivered burn, or the scan fallback.
+    _n_ret = int(df["tei_ignition_source"].notna().sum()) if "tei_ignition_source" in df.columns else 0
+    _n_del = count_eq("tei_ignition_source", "delivered")
+    _n_fb = count_eq("tei_ignition_source", "scan_fallback_no_entry")
+    # Lunar-orbit site targeting.
+    _n_loi3 = count_eq("loi1_source", "delivered_seed_3dof")
+    _n_doi = int((col("doi_retarget_s").fillna(0) != 0).sum())
+    _pdi = col("pdi_tig_offset_s").dropna()
+    _pdi_max = float(_pdi.abs().max()) if len(_pdi) else float("nan")
+    _ld = col("land_site_downrange_km")
+    _lx = col("land_site_crossrange_km")
+    _lr = np.hypot(_ld, _lx.fillna(0))[_ld.notna()]
+    _masc = col("land_downrange_err_m").dropna() / 1000.0
+    _pc = g("loi1_plane_change_deg")
+    _soi_n = count_eq("mission_failure", "missed_lunar_soi")
+    _tlc_txt = (" With ENABLE_TLC_IMPACT_RECOVERY on, an impact-class arrival (perilune below "
+                "−1,000 km before the first correction) is left to the MCC chain instead of being "
+                "declared a sphere-of-influence miss; the far-miss screen and the post-MCC verdict "
+                "stay. The screen acts only where perilune falls inside the 3-day translunar coast "
+                "window, which on some launch dates ends before perilune; "
+                + (f"{_soi_n} trial{'s' if _soi_n != 1 else ''} here still missed the sphere of influence."
+                   if _soi_n else "no trial here missed the sphere of influence.")
+                if pk["rc"].get("ENABLE_TLC_IMPACT_RECOVERY") else "")
+    _ra = _reaimed(df)
+    _ra_land = (int(_ra["splash_on_land"].fillna(False).astype(bool).sum())
+                if "splash_on_land" in _ra.columns else 0)
+    _reaim_txt = ((" — or, with ENABLE_WATER_ZONE_REAIM on, when that point is on land or within "
+                   "25 km of it, at the nearest water point along the same track (1,800–3,800 km) "
+                   "that the entry guidance's own prediction reaches within 10 km and at most 1 g "
+                   f"above its design-range peak ({len(_ra)} trial{'s' if len(_ra) != 1 else ''} here, "
+                   + (("it splashed in water" if len(_ra) == 1 else "all splashed in water")
+                      if len(_ra) and not _ra_land else
+                      f"{_ra_land} still on land" if len(_ra) else "none needed")
+                   + ")")
+                  if pk["rc"].get("ENABLE_WATER_ZONE_REAIM") else "")
+
+    if pk["site_lat"] is None:
+        landing = (
+            "Lunar orbit and landing — natural landing, no site targeting",
+            "This package names no landing site, so LOI-1 holds its delivered plane, DOI "
+            "flies at the package's GET and PDI ignites at the descent-orbit perilune: the "
+            "site correctors (ENABLE_LOI1_SITE_PLANE, ENABLE_DOI_SITE_RETARGET, "
+            "ENABLE_PDI_SITE_TARGETING) are off and the landing point is wherever the "
+            "dispersed descent comes down. Landing-site miss metrics are not defined.")
     else:
-        tlmcc_n = (float(df["mcc_n_burns"].median())
-                   if "mcc_n_burns" in df.columns
-                   and len(df["mcc_n_burns"].dropna())
-                   else float("nan"))
-    temcc_dv = (float(df["mcc_total_dv_ms"].median())
-                if "mcc_total_dv_ms" in df.columns
-                and len(df["mcc_total_dv_ms"].dropna())
-                else float("nan"))
+        landing = (
+            f"Lunar orbit and landing — {pk['site_name']} targeting acts on the true state",
+            f"The nominal flies the package's LOI-1 open-loop: its {_pc:.2f}° plane change "
+            f"puts the parking orbit through {pk['site_name']} (Apollo 11's LOI-1 changed plane "
+            f"by ~4.1°). Dispersed trials re-solve LOI-1 in 3-DOF (Δv, tilt, yaw) for the site "
+            f"plane ({_n_loi3:,} trials), shift DOI along the parking orbit when PDI would "
+            f"otherwise need more than {_soft:.0f} s ({_n_doi:,} trials), and move PDI "
+            f"ignition P63-style for the site's downrange (largest shift {_pdi_max:.0f} s). All "
+            f"three predict from the trial's TRUE state with the undispersed descent model — "
+            f"there is no lunar-orbit navigation error — so the landing miss from "
+            f"{pk['site_name']} (median {float(_lr.median()):.1f} km, 95th percentile "
+            f"{float(_lr.quantile(0.95)):.1f} km, max {float(_lr.max()):.1f} km over "
+            f"{len(_lr):,} landings) measures targeting precision. It is tighter than Apollo "
+            f"11's own touchdown ~6.4 km west of its target, which the crew flew manually "
+            f"past a boulder field. The calibrated mascon long-landing proxy "
+            f"(MASCON_DOWNRANGE_*, mean {float(_masc.mean()):.1f} km long) is recorded per "
+            f"trial as land_downrange_err_m and is NOT added to that miss."
+            if len(_lr) else "No trial landed.")
 
     return [
-        ("Saturn V ascent — engine-out reliabilities are sourced estimates",
-         "The ascent and TLI ARCHITECTURE is no longer a limitation: the "
-         "full stack is physically flown (S-IC/S-II/S-IVB, IGM linear-tangent "
-         f"steering to a {park} parking orbit vs Apollo's ~184 × 186 km), TLI "
-         "ignites from each trial's own launched parking orbit with an "
-         "IGM-style steered cutoff (ENABLE_INTEGRATED_TLI + "
-         "ENABLE_LAUNCH_CONTINUITY, both default ON) — the pad-to-splashdown "
-         "trajectory is one continuous flown path — and the model commands "
-         "Apollo's AS-FLOWN launch azimuth (72.058°). What remains is the "
-         "INPUTS: the engine-out probabilities driving the launch-failure "
-         "mode are sourced estimates — F-1 ~98.5% per engine (conservative; "
-         "no F-1 ever failed in flight), J-2 ~99%, S-IVB ignition ~99.5% "
-         "(informed by the Apollo 6 failures). The residual guidance fidelity "
-         "is small and now lives in the steering PLANE, not the commanded "
-         "azimuth: a stage-isolated +0.08° inclination bias (32.60° vs "
-         "as-flown 32.521°) that the flown vehicle absorbs via the TLI "
-         "preset's yaw tilt, closing the launch window to periselene 103 km / "
-         "out-of-plane +3 km / arrival slip −0.05 h at the real azimuth."),
+        ("Saturn V ascent and TLI fly the package's steering; engine-out reliabilities are sourced estimates",
+         "The full stack is physically flown (S-IC/S-II/S-IVB, IGM linear-tangent "
+         f"steering to a {park} parking orbit vs Apollo's ~184 × 186 km), and TLI "
+         "ignites from each trial's own launched parking orbit with an IGM-style "
+         "steered cutoff (ENABLE_INTEGRATED_TLI + ENABLE_LAUNCH_CONTINUITY), so the "
+         "pad-to-splashdown trajectory is one continuous flown path. The launch "
+         f"azimuth ({pk['az']:.4f}°) and the TLI controls are the delivered package's, "
+         "not Apollo's flown values: the solver chose the azimuth that makes the TLI "
+         "steering yaw zero (a coplanar injection; Apollo flew 72.058°), and its "
+         f"parking orbit is inclined {pk['incl']:.3f}° (as flown 32.521°). The "
+         f"package's TLI is a free return (ballistic return perigee {pk['rp_km']:.0f} km, "
+         f"entering at {pk['fr_gamma']:.2f}°); its pericynthion longitude is screened, "
+         "not solved. What remains is the INPUTS: the engine-out probabilities "
+         "driving the launch-failure mode are sourced estimates — F-1 ~98.5% per "
+         "engine (conservative; no F-1 ever failed in flight), J-2 ~99%, S-IVB "
+         "ignition ~99.5% (informed by the Apollo 6 failures)." + _sivb_txt),
         ("Navigation is a scheduled-slot MSFN stand-in, not a continuous filter",
-         "Navigation is no longer open-loop: with ENABLE_MSFN_NAV / "
-         "_KNOWLEDGE / _EXEC_ERROR_FORM (all default ON), every perturbed "
-         "trial RE-SOLVES at each Apollo MCC opportunity on a tracked estimate "
-         "(truth + a Vonbun-1966-class OD residual) and executes on truth with "
-         "the as-flown RCS/SPS execution-error form — translunar slots run a "
-         "3-DOF fixed-epoch closest-approach correction, TEI seeds a "
-         "planned-return FPA/TOF→EI-epoch/latitude solve, and the trans-Earth "
-         "chain targets the full entry point. The Apollo fire/waive pattern "
-         "emerges untuned (~84% of the fleet flies exactly one translunar "
-         f"correction; trans-Earth trims ~{temcc_dv:.1f} m/s median vs "
-         "Apollo's single 1.5). The RESIDUAL is that this is a DISCRETE-slot "
-         "schedule-keeper, not a true continuous filter: its knowledge sigmas "
-         "and ~50 km deadband are pre-mission-analysis estimates, the "
-         f"trans-Earth chain runs ~1 burn above Apollo, and ~{_rz_gt100:.0f}% of returns "
-         "pay a displaced-recovery-zone cost of more than 100 km on "
-         "hypersensitive "
-         "corridor-edge geometries — the honest arrival dispersion Apollo's "
-         "real-time tracking existed to manage. (The nominal TEI ΔV ~"
-         f"{tei:.0f} m/s vs Apollo's 999 reflects lunar-orbit geometry, not"
-         "a propellant error.)"),
+         "Navigation is not open-loop: with ENABLE_MSFN_NAV / _KNOWLEDGE / "
+         "_EXEC_ERROR_FORM (all default ON), every perturbed trial RE-SOLVES at each "
+         "Apollo MCC opportunity on a tracked estimate (truth + a Vonbun-1966-class OD "
+         "residual) and executes on truth with the as-flown RCS/SPS execution-error "
+         "form — translunar slots run a 3-DOF fixed-epoch closest-approach correction "
+         "onto the package's close-approach plan, and the trans-Earth chain targets the "
+         "full entry point. TEI ignites at the package's epoch along its direction as "
+         f"the seed of the consumer's 3-DOF corrector ({_n_del:,} of {_n_ret:,} returns); "
+         f"when that burn reaches no entry the TEI scan fallback flies the return "
+         f"({_n_fb:,}). The Apollo fire/waive pattern emerges untuned ({_tl_one:.0f}% of "
+         "the fleet flies exactly one translunar correction; trans-Earth median "
+         f"{_te_n:.0f} burns and {temcc_dv:.1f} m/s vs Apollo's single 1.5 m/s "
+         "MCC-5). The RESIDUAL is that this is a DISCRETE-slot schedule-keeper, not a "
+         "true continuous filter: its knowledge sigmas and ~50 km deadband are "
+         "pre-mission-analysis estimates and the trans-Earth chain runs ~1 burn above "
+         f"Apollo. (The nominal TEI ΔV ~{tei:.0f} m/s vs Apollo's 999 is the package's "
+         "in-plane TEI: the as-flown EI latitude is not reachable from the free-return "
+         f"capture orbit, so the package's EI lies at {g('ei_lat'):.2f}° latitude vs "
+         f"{pk['ei_lat_plan']:.2f}° flown, screened.)"),
         ("Rendezvous ΔV is computed, not flown as integrated burns",
          "The rendezvous is no longer a fixed budget (ENABLE_FLOWN_RENDEZVOUS, "
          "default ON): after the LM ascent flattens (pitch → ~88° from "
@@ -870,7 +1029,7 @@ def known_limitations(nominal_results, df, outdir=None):
          "(9 × 45 nmi) ellipse, a Hohmann-class coelliptic (CSI/CDH) raise "
          "from that dispersed insertion to the CSM orbit is SOLVED and added "
          "to a sourced TPI/braking allowance + the physical plane change "
-         "(nominal ~41.6 m/s, Apollo-class), gated against the APS + ~60 m/s "
+         f"(nominal ~{g('rendezvous_dv_required_ms'):.1f} m/s, Apollo-class), gated against the APS + ~60 m/s "
          "RCS budget so a poor ascent can genuinely bind. The RESIDUAL: this "
          "is still a computed-ΔV PROXY, not the individual CSI/CDH/terminal "
          "burns flown as integrated maneuvers with explicit LM↔CSM phasing "
@@ -879,6 +1038,7 @@ def known_limitations(nominal_results, df, outdir=None):
          "per-burn phasing dispersions are not. (Docking failure itself is "
          "sourced — ~0.95%/docking from 2 capture anomalies in ~21 program "
          "dockings — applied at both docking events.)"),
+        landing,
         ("Surface operations — coefficients are estimate-grade",
          "The 21.6-hour surface stay carries three SOURCED discrete failure "
          "modes (ENABLE_DESCENT_FAILURE_MODES): an unrecoverable LM "
@@ -906,7 +1066,7 @@ def known_limitations(nominal_results, df, outdir=None):
          "Apollo 13 class) is drawn per mission at PROB_SM_CATASTROPHIC = 1/15 "
          "— the SOURCED rate of 1 such event in 15 crewed CSM flights — "
          "striking at a uniformly-drawn fraction of the timeline. It is the "
-         "single largest crew-risk family in the run (~6%). The CONSEQUENCE "
+         f"single largest crew-risk family in the run ({_sm_share:.1f}% of trials). The CONSEQUENCE "
          "depends on where it lands, across four phases with LM-attached "
          "phases getting the lifeboat: translunar p_survive ~0.90 and "
          "lunar-orbit ~0.85 (LM still attached — the demonstrated Apollo 13 "
@@ -918,68 +1078,69 @@ def known_limitations(nominal_results, df, outdir=None):
          "duty-cycle-weighted), and the three RECOVERABLE Apollo SM anomalies "
          "(Apollo 15 SPS switch, 16 TVC, Skylab 3 RCS quad leaks) are not "
          "separately modeled — only the catastrophic class."),
-        ("Midcourse basis is now full 3-DOF; the deadband + residual are estimates",
-         "The outbound MCC now uses the full 3-DOF MSFN/RTCC corrector "
+        ("Midcourse basis is full 3-DOF; the deadband + residual are estimates",
+         "The outbound MCC uses the full 3-DOF MSFN/RTCC corrector "
          "(ENABLE_MSFN_NAV, default ON): each translunar slot solves the "
-         "ENTIRE velocity vector — INCLUDING the radial axis the old "
-         "along-track + cross-track basis omitted — to drive the fixed-epoch "
+         "ENTIRE velocity vector — INCLUDING the radial axis an "
+         "along-track + cross-track basis omits — to drive the fixed-epoch "
          "close-approach point (B-plane AND arrival epoch jointly) onto the "
-         "plan, on a Vonbun-1966-class tracking estimate, executed on truth "
+         "package's plan, on a Vonbun-1966-class tracking estimate, executed on truth "
          "with the as-flown RCS/SPS-branched residual (0.03 / 0.076 m/s per "
          "axis, MSC-00171 Table 8.6-II). The remaining approximations are the "
          "estimated ~50 km close-approach deadband (~±21 s timeline drift), "
          "the ~10 m/s MCC-1 defer-to-better-tracking threshold, and the honest "
          "abstraction that a burn's outcome is seen only at the next tracking "
-         "slot, not continuously. (The legacy 2-DOF B-plane solve survives "
-         "only for the nominal reference and when MSFN is off.)"),
+         "slot, not continuously. The package itself models no MCCs: the "
+         "nominal flies none (MCC-2 was 6.4 m/s as flown)." + _tlc_txt),
         ("Moon model & lunar gravity — mascons are a proxy",
-         "The default configuration (ENABLE_REAL_EPHEMERIS=True) uses a real "
-         "July-1969 lunar ephemeris — " + _ephem_txt + " — with Earth rotation "
-         "anchored to the real launch-epoch GMST, so the return plane and "
-         "splashdown reflect the true sky. The Moon-fixed frame now uses the "
-         "IAU-2009 lunar orientation (ENABLE_LUNAR_LIBRATION=True): the true "
-         "spin-pole + prime-meridian W with the physical-libration terms, "
-         "REPLACING the earlier synchronous-lock approximation — which is why "
-         "the reported landing point is now true selenographic. Lunar gravity "
-         "is the real GRAIL GRGM1200A field truncated to degree 8 "
-         "(ENABLE_LUNAR_SH_FIELD), so the parking orbit evolves physically "
-         "(~5–20 km/day, the documented Apollo behavior). Honest residual: "
-         "localized maria mascons live at degree ≥50 and are NOT captured by "
-         "the degree-8 field, so they remain a calibrated landing-dispersion "
-         "proxy (MASCON_DOWNRANGE_*) rather than integrated gravity. Setting "
-         "the flags False reproduces the legacy idealized model (circular "
-         "Moon, degree-2 closed form, tidal-lock frame)."),
-        ("Entry & splashdown — EI delivery bias, no atmospheric dispersion",
+         "The run uses a real July-1969 lunar ephemeris — " + _ephem_txt + " — with Earth "
+         "rotation anchored to the real launch-epoch GMST, so the return plane and "
+         "splashdown reflect the true sky; the package was solved on the same "
+         "conventions (precession of date evaluated exactly at every call). The "
+         "Moon-fixed frame uses the IAU-2009 lunar orientation "
+         "(ENABLE_LUNAR_LIBRATION): the true spin-pole + prime-meridian W with the "
+         "physical-libration terms, so the reported landing point is true "
+         "selenographic. Lunar gravity is the real GRAIL GRGM1200A field truncated "
+         "to degree 8 (ENABLE_LUNAR_SH_FIELD), so the parking orbit evolves "
+         "physically (~5–20 km/day, the documented Apollo behavior). Honest "
+         "residual: localized maria mascons live at degree ≥50 and are NOT captured "
+         "by the degree-8 field; their effect on the landing is the calibrated "
+         "proxy described under the landing item, not integrated gravity."),
+        ("Entry & splashdown — no atmospheric dispersion; the recovery zone is screened",
          "Entry flies CLOSED-LOOP guidance by default "
          "(ENABLE_SKIP_ENTRY_GUIDANCE): a g-aware numerical "
          "predictor-corrector picks the bank angle from full trajectory "
          "predictions (penalty above 7 g, hard guard at 9.5 g — under Apollo's "
          "10 g guidance limit and the 12 g structural bound), with crossrange "
-         "via deadband bank reversals. The peak-g corridor is CLOSED: "
-         "ENABLE_APOLLO_ENTRY_GUIDANCE (default ON) flies Apollo constant-drag "
-         "energy management (TN D-6725) — first dip lift-up to the physical "
-         "entry-FPA floor, then a constant-drag plateau bleeds energy without "
-         "skipping — and the entry air density is now the sourced US Standard "
-         "Atmosphere 1976 (ENABLE_USSA76_ENTRY), replacing the legacy 3-segment "
-         "exponential that was running the peak ~0.4 g high. Peak g is "
+         "via deadband bank reversals. ENABLE_APOLLO_ENTRY_GUIDANCE (default "
+         "ON) flies Apollo constant-drag energy management (TN D-6725) — first "
+         "dip lift-up to the physical entry-FPA floor, then a constant-drag "
+         "plateau bleeds energy without skipping — on the sourced US Standard "
+         "Atmosphere 1976 (ENABLE_USSA76_ENTRY). Peak g is "
          f"{pg:.2f} g at the nominal / {med_g:.2f} g fleet median, matching "
-         "Apollo's ~6.5 g (the 6-variant HUNTEST corpus that could not close it "
-         f"stays OFF). The nominal lands ~{absmiss:.0f} km from its recovery "
-         f"zone; the MC guidance miss is ~{disp:.1f} km median (fleet max "
-         f"~{disp_max:.0f} km from a rare +2σ shallow-tail overfly; Apollo 11 "
-         "splashed ~3 km from its aim point), on per-opportunity zones along "
-         "each trial's own entry ground track. Splashdown is FLOWN, not "
-         "geometric (ENABLE_APOLLO_ELS, default ON): a two-phase parachute "
-         "descent (2 drogues → ~56 m/s, 3 mains → ~9.8 m/s), wind drift, CM "
-         "flotation (Apollo 11 was stable-2), and an Apollo-faithful "
-         "parachute-failure mode. REMAINING residuals: the EI DELIVERY bias "
-         f"(nominal EI {fpa_ei:.2f}° vs Apollo's −6.49°, a TEI-delivery item — "
-         "the guidance law AND the atmosphere are now both faithful), the "
-         "absence of winds and per-trial density dispersion, and estimate-grade "
-         f"parachute/flotation rates. The recovery region is near ({slat:.1f}°N, "
-         f"{abs(slon):.0f}°{_ew}), ~{dlon_km_ap:.0f} km from Apollo 11's actual "
-         "splashdown — set by the return-leg timeline + Earth rotation, not a "
-         "guidance error."),
+         "Apollo's ~6.5 g. Each trial aims at a recovery zone placed 2,784 km "
+         "(Apollo's EI-to-splash design range) along its OWN entry ground track"
+         + _reaim_txt + "; "
+         f"the nominal lands ~{absmiss:.0f} km from its zone and the fleet's guidance "
+         f"miss is ~{disp:.1f} km median (Apollo 11 splashed ~3 km from its aim "
+         f"point). The tail: {_far_n} return{'s' if _far_n != 1 else ''} splashed more "
+         f"than 25 km out (max ~{disp_max:.0f} km)"
+         + (f", {'all' if _far_fb == _far_n else _far_fb} of them scan-fallback TEIs, "
+            f"entering shallow at {float(_far_fpa.max()):.2f}° to {float(_far_fpa.min()):.2f}°"
+            if _far_n and len(_far_fpa) else "")
+         + ". Splashdown is FLOWN, not geometric (ENABLE_APOLLO_ELS): a two-phase "
+         "parachute descent (2 drogues → ~56 m/s, 3 mains → ~9.8 m/s), wind "
+         "drift, CM flotation (Apollo 11 was stable-2), and an Apollo-faithful "
+         "parachute-failure mode. The nominal enters at "
+         f"{fpa_ei:.2f}° (package aim −6.495°, Apollo −6.48°). REMAINING residuals: "
+         "the absence of winds and per-trial density dispersion, and "
+         f"estimate-grade parachute/flotation rates. The package's recovery target is ({pk['rt_lat']:.2f}°N, "
+         f"{abs(pk['rt_lon']):.2f}°{_rt_ew}); its downrange is a placeholder and its "
+         "zone crossrange is screened (ill-posed with perigee and time of flight "
+         f"pinned), so the aimed zones sit a median {_rz_med:.0f} km from it "
+         f"({_rz_gt100:.0f}% more than 100 km). The nominal splashes at "
+         f"({slat:.1f}°N, {abs(slon):.1f}°{_ew}), ~{dlon_km_ap:.0f} km from Apollo "
+         "11's actual splashdown."),
     ]
 
 
@@ -995,6 +1156,13 @@ def generate_summary(df, nominal_results, outdir):
     lines.append("=" * 70)
     lines.append("APOLLO 11 PHYSICS-INTEGRATED SIMULATION — MONTE CARLO RESULTS")
     lines.append("=" * 70)
+    _pk = _package_info(outdir)
+    lines.append(f"Package: {_pk['label']}  sha256 {_pk['sha'][:16]}  ({_pk['mission']})")
+    _am = _amendment(outdir)
+    if _am:
+        lines.append(f"Amended: trial(s) {', '.join(str(t) for t in _am['refly_trials'])} re-flown on "
+                     f"{_am['refly_code_sha256']} and swapped in; the other trials flew "
+                     f"{_am['base_code_sha256']} (see amendment.json)")
     lines.append(f"Total trials: {n}")
     lines.append(f"Mission success (landed + crew returned alive): {succ.sum()}/{n} "
                   f"({100*succ.sum()/max(1,n):.1f}%)")
@@ -1146,6 +1314,24 @@ def generate_summary(df, nominal_results, outdir):
     with open(os.path.join(outdir, "summary.txt"), "w") as f:
         f.write("\n".join(lines))
     print(f"  ✓ summary.txt ({len(lines)} lines)")
+
+
+SPLASH_MAP_KM_PER_DEG = 6371.0088 * np.pi / 180.0
+
+
+def splash_map_offsets(df):
+    """(east_km, north_km, radius_km) of each splash from the recovery zone its
+    trial aimed for, NaN where the trial did not splash; None without the columns."""
+    cols = ("splash_lat", "splash_lon", "recovery_zone_lat", "recovery_zone_lon")
+    if not all(c in df.columns for c in cols):
+        return None
+    lat, lon, zlat, zlon = (pd.to_numeric(df[c], errors="coerce") for c in cols)
+    e = ((lon - zlon + 180.0) % 360.0 - 180.0) * np.cos(np.radians(zlat)) * SPLASH_MAP_KM_PER_DEG
+    nn = (lat - zlat) * SPLASH_MAP_KM_PER_DEG
+    rad = np.hypot(e, nn)
+    if not rad.notna().any():
+        return None
+    return e, nn, rad
 
 
 def generate_plots(df, nominal_traj, nominal_results, outdir):
@@ -1397,6 +1583,98 @@ def generate_plots(df, nominal_traj, nominal_results, outdir):
             plt.savefig(os.path.join(outdir, "splash_miss.png"), dpi=110)
             plt.close()
             print("  ✓ splash_miss.png")
+
+    # 4b) Splash map (the Artemis II dashboard's splashdown figure). Each splash
+    #     is placed relative to the recovery zone THAT trial aimed for (its own
+    #     zone along its entry ground track, recovery_zone_lat/lon), km east /
+    #     north on the local tangent plane (spherical R 6,371.0088 km); the radius
+    #     reproduces splash_miss_km to 0.15 km. Mission-success splashes grey,
+    #     other flown water splashes orange, land impacts red crosses.
+    sm = splash_map_offsets(df)
+    if sm is not None:
+        e, nn, rad = sm
+        has = rad.notna()
+        land = has & (df["splash_on_land"].fillna(False).astype(bool)
+                      if "splash_on_land" in df.columns else False)
+        _ok = (df["mission_success"] if "mission_success" in df.columns
+               else df["full_success"]).fillna(False).astype(bool)
+        good = has & _ok & ~land
+        other = has & ~_ok & ~land
+        lim = max(10.0, 1.1 * float(rad[has].quantile(0.99)))
+        beyond = int((has & (rad > lim)).sum())
+        fig, ax = plt.subplots(figsize=(7.2, 6.6))
+        if good.any():
+            ax.scatter(e[good], nn[good], s=8, c="#a0aec0", alpha=0.6, zorder=1,
+                       label=f"mission-success splashdowns ({int(good.sum()):,})")
+        if other.any():
+            ax.scatter(e[other], nn[other], s=40, c="#dd6b20", edgecolor="black",
+                       linewidth=0.6, zorder=3,
+                       label=f"other flown returns ({int(other.sum())})")
+        if land.any():
+            ax.scatter(e[land], nn[land], marker="x", c="#C73E1D", s=70, zorder=4,
+                       label=f"land impact ({int(land.sum())})")
+            # Label each land impact (up to 4) with where ITS zone was: the map is
+            # relative to each trial's own zone, so a land impact can sit close to
+            # the star while its zone lay over land far from the recovery target.
+            for k, ix in enumerate(df.index[land][:4]):
+                _zl, _zo = float(df.at[ix, "recovery_zone_lat"]), float(df.at[ix, "recovery_zone_lon"])
+                _zd = (float(df.at[ix, "recovery_zone_displacement_km"])
+                       if "recovery_zone_displacement_km" in df.columns else float("nan"))
+                _tr = int(df.at[ix, "trial"]) if "trial" in df.columns else int(ix)
+                ax.annotate(
+                    f"trial {_tr}: land impact {rad[ix]:.1f} km from its zone,\n"
+                    f"but the zone was at {abs(_zl):.1f}°{'N' if _zl >= 0 else 'S'} "
+                    f"{abs(_zo):.1f}°{'E' if _zo >= 0 else 'W'} (over land),\n"
+                    f"{_zd:,.0f} km from the recovery target",
+                    xy=(e[ix], nn[ix]), xytext=(0.97, 0.04 + 0.13 * k),
+                    textcoords="axes fraction", ha="right", va="bottom", fontsize=8,
+                    color="#C73E1D", zorder=6,
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#C73E1D", alpha=0.9),
+                    arrowprops=dict(arrowstyle="->", color="#C73E1D", lw=0.9))
+        # Zones the water re-aim moved (ENABLE_WATER_ZONE_REAIM): blue diamonds,
+        # labelled (up to 4) with how far along the track the zone moved and where to.
+        _ra = has & (df["recovery_zone_reaim"].astype(str) == "water"
+                     if "recovery_zone_reaim" in df.columns else False)
+        if _ra.any():
+            ax.scatter(e[_ra], nn[_ra], marker="D", s=46, c="#2b6cb0", edgecolor="black",
+                       linewidth=0.6, zorder=4,
+                       label=f"zone re-aimed to water ({int(_ra.sum())})")
+            for k, ix in enumerate(df.index[_ra][:4]):
+                _zl, _zo = float(df.at[ix, "recovery_zone_lat"]), float(df.at[ix, "recovery_zone_lon"])
+                _mv = float(df.at[ix, "recovery_zone_reaim_km"])
+                _tr = int(df.at[ix, "trial"]) if "trial" in df.columns else int(ix)
+                ax.annotate(
+                    f"trial {_tr}: zone on land moved {abs(_mv):,.0f} km "
+                    f"{'uprange' if _mv < 0 else 'downrange'} along its track\n"
+                    f"to {abs(_zl):.1f}°{'N' if _zl >= 0 else 'S'} "
+                    f"{abs(_zo):.1f}°{'E' if _zo >= 0 else 'W'} (water); splashed {rad[ix]:.1f} km from it",
+                    xy=(e[ix], nn[ix]), xytext=(0.03, 0.04 + 0.11 * k),
+                    textcoords="axes fraction", ha="left", va="bottom", fontsize=8,
+                    color="#2b6cb0", zorder=6,
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#2b6cb0", alpha=0.9),
+                    arrowprops=dict(arrowstyle="->", color="#2b6cb0", lw=0.9))
+        for r in (5.0, 10.0, 25.0, 50.0):
+            if r < lim:
+                ax.add_patch(plt.Circle((0, 0), r, fill=False, ls=":", lw=0.9,
+                                        color="#4a5568"))
+                ax.text(r / np.sqrt(2), r / np.sqrt(2), f"{r:.0f} km", fontsize=8,
+                        color="#4a5568")
+        ax.plot(0, 0, marker="*", ms=15, c="#111", ls="none", zorder=5,
+                label="aimed recovery zone")
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_aspect("equal")
+        ax.set_xlabel("km east of the aimed recovery zone")
+        ax.set_ylabel("km north of the aimed recovery zone")
+        ax.set_title("Splashdowns around the recovery zone"
+                     + (f"\n({beyond} splash{'es' if beyond != 1 else ''} beyond the frame)"
+                        if beyond else ""), fontsize=11)
+        ax.legend(fontsize=8, loc="upper left")
+        ax.grid(alpha=0.3)
+        plt.savefig(os.path.join(outdir, "splash_map.png"), dpi=110,
+                    bbox_inches="tight")
+        plt.close()
+        print("  ✓ splash_map.png")
 
     # 5) Nominal descent profile
     if "descent" in nominal_traj:
@@ -1702,7 +1980,7 @@ def generate_dashboard(df, nominal_results, outdir):
 
     # Data-driven Apollo cross-check rows + Known Limitations (shared sources,
     # computed from THIS run, so neither can drift from the actual results).
-    crosscheck_rows = build_crosscheck_rows(nominal_results, df)
+    crosscheck_rows = build_crosscheck_rows(nominal_results, df, outdir)
 
     # From-scratch validation panel (optional): rendered iff derived no-flight-data
     # nominals exist in outputs/{fresh_ontime_nom,jul18_site3_nom,aug14_site2_nom}/.
@@ -1757,10 +2035,100 @@ timeline. Per-trial phase timing is saved under <code>trials/</code>.</p>
         src_lines = 0
     src_line = "<code>apollo11.py</code>"
 
+    # Package-run panel (sim repo): which delivered nominal this fleet re-flew.
+    _pk = _package_info(outdir)
+    _rc = _pk["rc"]
+    _flags = [("APOLLO_HAZARDS", "ENABLE_SPE_HAZARD"),
+              ("APOLLO_IGM_ROBUST", "ENABLE_IGM_ROBUST_ACCEPT"),
+              ("APOLLO_SIVB_RESTART", "ENABLE_SIVB_RESTART_FAILURE"),
+              ("APOLLO_APS_IGNITION", "ENABLE_APS_IGNITION_FAILURE"),
+              ("APOLLO_TLC_IMPACT_RECOVERY", "ENABLE_TLC_IMPACT_RECOVERY"),
+              ("APOLLO_WATER_ZONE_REAIM", "ENABLE_WATER_ZONE_REAIM")]
+    _on = [env for env, key in _flags if _rc.get(key)]
+    _off = [env for env, key in _flags if key in _rc and not _rc.get(key)]
+    _site_txt = (f"{_pk['site_name']} ({_pk['site_lat']:.2f}°, {_pk['site_lon']:.2f}°)"
+                 if _pk["site_lat"] is not None else "no site (natural landing)")
+    _am = _amendment(outdir)
+    _am_html = ""
+    if _am:
+        _ts = ", ".join(str(t) for t in _am["refly_trials"])
+        _am_html = (f"\n<br><strong>Amended run.</strong> Trial{'s' if len(_am['refly_trials']) != 1 else ''} "
+                    f"{_ts} {'were' if len(_am['refly_trials']) != 1 else 'was'} re-flown on the cluster with code "
+                    f"<code>{_am['refly_code_sha256']}</code> and swapped into this fleet's results; the other "
+                    f"trials flew <code>{_am['base_code_sha256']}</code> without "
+                    f"{' / '.join(_am.get('base_flags_off', []))}. {_am.get('basis', '')}")
+    package_html = f"""<div class="context">
+<strong>Package run.</strong> This fleet re-flies the solver's delivered nominal
+<code>{_pk['label']}</code> (package sha256 <code>{_pk['sha'][:16]}</code>;
+{_pk['mission']}). The launch azimuth ({_pk['az']:.4f}°), the TLI, LOI-1, LOI-2 and
+TEI controls, the DOI GET, the landing site — {_site_txt} — and the recovery target
+come from the package; the consumer flies the nominal open-loop from them and every
+dispersed trial re-targets from its seeds. Env-gated flags on: {', '.join(_on) or 'none'}{'; off: ' + ', '.join(_off) if _off else ''}.{_am_html}
+</div>"""
+
     # Median guidance miss (vs aimed zone) for the splash-figure caption.
     disp = (float(df["splash_miss_km"].median())
             if "splash_miss_km" in df.columns and len(df["splash_miss_km"].dropna())
             else float("nan"))
+
+    # Splash map section (sim-repo addition, the Artemis II dashboard's figure).
+    splash_section = ""
+    _sm = splash_map_offsets(df)
+    if _sm is not None and os.path.exists(os.path.join(outdir, "splash_map.png")):
+        _r = _sm[2].dropna()
+        _land = (int(df["splash_on_land"].fillna(False).astype(bool).sum())
+                 if "splash_on_land" in df.columns else 0)
+        _zd = (pd.to_numeric(df["recovery_zone_displacement_km"], errors="coerce")
+               [_sm[2].notna()].median()
+               if "recovery_zone_displacement_km" in df.columns else float("nan"))
+        # Land impacts: the map hides geography, so say where each zone was.
+        _land_txt = ""
+        if _land and {"recovery_zone_lat", "recovery_zone_lon"} <= set(df.columns):
+            _li = df[df["splash_on_land"].fillna(False).astype(bool)]
+            _parts = []
+            for _, _row in _li.head(4).iterrows():
+                _zl, _zo = float(_row["recovery_zone_lat"]), float(_row["recovery_zone_lon"])
+                _parts.append(
+                    f"trial {int(_row['trial'])} ({float(_row['splash_miss_km']):.1f}&nbsp;km from a zone at "
+                    f"{abs(_zl):.1f}°{'N' if _zl >= 0 else 'S'} {abs(_zo):.1f}°{'E' if _zo >= 0 else 'W'}, "
+                    f"{float(_row.get('recovery_zone_displacement_km', float('nan'))):,.0f}&nbsp;km from the "
+                    f"recovery target, "
+                    + {"scan_fallback_no_entry": "scan-fallback TEI", "delivered": "package TEI"}
+                    .get(str(_row.get("tei_ignition_source")), str(_row.get("tei_ignition_source")))
+                    + ")")
+            _land_txt = (" A land impact can sit close to the star because the map is relative "
+                         "to each trial's own zone: the guidance hit its zone, but the zone itself "
+                         "lay over land. "
+                         + ("The water re-aim found no flyable water for it. "
+                            if _rc.get("ENABLE_WATER_ZONE_REAIM") else
+                            "The zone rule does not check for water. ")
+                         + "; ".join(_parts) + ".")
+        _ra = _reaimed(df)
+        _reaim_cap = ""
+        if len(_ra):
+            _rp = []
+            for _, _row in _ra.head(4).iterrows():
+                _zl, _zo = float(_row["recovery_zone_lat"]), float(_row["recovery_zone_lon"])
+                _mv = float(_row["recovery_zone_reaim_km"])
+                _rp.append(f"trial {int(_row['trial'])} (zone moved {abs(_mv):,.0f}&nbsp;km "
+                           f"{'uprange' if _mv < 0 else 'downrange'} "
+                           f"to {abs(_zl):.1f}°{'N' if _zl >= 0 else 'S'} {abs(_zo):.1f}°{'E' if _zo >= 0 else 'W'}, "
+                           f"splashed {float(_row['splash_miss_km']):.1f}&nbsp;km from it at {float(_row['max_g']):.2f}&nbsp;g)")
+            _reaim_cap = (f" {len(_ra)} zone{'s' if len(_ra) != 1 else ''} on or within 25&nbsp;km of land "
+                          f"{'were' if len(_ra) != 1 else 'was'} re-aimed to water along the same track "
+                          "(ENABLE_WATER_ZONE_REAIM, blue diamonds): " + "; ".join(_rp) + ".")
+        splash_section = f"""<h2>Splashdowns around the recovery zone</h2>
+<div class="context">Every trial that flew to splashdown ({len(_r):,} of {n:,}),
+placed relative to the recovery zone <em>that trial</em> aimed for: the zone moves
+along each trial's own entry ground track (median {_zd:.0f}&nbsp;km from the
+package's recovery target), so this is the entry-guidance miss, the metric Apollo
+11's own ~3&nbsp;km splash miss was measured against. km east / north on the local
+tangent plane (spherical R&nbsp;6,371.0088&nbsp;km). Miss median {disp:.1f}&nbsp;km,
+95th percentile {_r.quantile(0.95):.1f}&nbsp;km, max {_r.max():.1f}&nbsp;km;
+{int((_r < 5).sum()):,} within 5&nbsp;km and {int((_r < 10).sum()):,} within
+10&nbsp;km; {_land} land impact{'s' if _land != 1 else ''}.{_land_txt}{_reaim_cap}</div>
+<div class="plot">{embed_image("splash_map.png")}</div>
+"""
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -1782,6 +2150,7 @@ mission phase from Kennedy Space Center liftoff through Pacific splashdown{compu
 </div>
 </div>
 
+{package_html}
 <div class="context">
 <strong>What this simulation does.</strong> Each trial samples engine-out
 events (F-1, J-2 reliability), engine performance dispersions (ISP, thrust),
@@ -1841,6 +2210,7 @@ mission, so such a trial clears every phase.)</div>
 {failure_table}
 </table>
 
+{splash_section}
 <h2>Nominal Trajectory vs Apollo 11 Actuals</h2>
 <table>
 <tr><th>Metric</th><th>Nominal (mine)</th><th>Apollo 11 actual</th><th>Error</th></tr>
@@ -1851,10 +2221,12 @@ mission, so such a trial clears every phase.)</div>
 
 <h2>Apollo 11 Cross-Check</h2>
 <div class="context">
-Simulated nominal values compared with documented Apollo 11 mission
-parameters (Wikipedia, NASA Mission Reports). Green = within 5% of actual,
-yellow = within 30%, red = larger discrepancy. Discrepancies are explained
-in the Known Limitations section below.
+The package's nominal, as the consumer re-flew it, compared with documented
+Apollo 11 mission parameters (Wikipedia, NASA Mission Reports). Green = within 5%
+of actual, yellow = within 30%, red = larger discrepancy, grey = a design
+difference the package discloses (it was solved from the as-planned doctrine,
+not commanded to the flown values). Discrepancies are explained in the Known
+Limitations section below.
 </div>
 <table style="width:100%;max-width:900px;border-collapse:collapse;margin:20px auto;">
 <thead>
@@ -1989,4 +2361,9 @@ def main(csv_path=None, traj_path=None, nominal_path=None, outdir=OUTDIR, audit=
 
 
 if __name__ == "__main__":
-    main()
+    # Sim-repo addition: an optional run directory; no realism audit (the
+    # original's audit describes the original build, not a package run).
+    if len(sys.argv) > 1:
+        main(outdir=sys.argv[1], audit=False)
+    else:
+        main()

@@ -1,0 +1,14 @@
+{
+ "note": "The consumer's own nominal CSM+LM stack state just after LOI-2 (the start of the lunar parking-orbit loiter), from the deterministic re-fly milestone 'loi2_cutoff' on the bound Jul-16 free-return package, 2026-10-25. Frame: the consumer's ECI, m / m/s / kg. Used by tests/test_doi_retarget.py.",
+ "package_sha256": "3a3a4b0e1d4ac3b910d777417ea5c5b8679b7486066d5cfb4d83e5a3b285c5e9",
+ "t_get_s": 288968.4446814387,
+ "state": [
+  -394496186.94623846,
+  26196814.09773532,
+  8968551.771118639,
+  569.602691416748,
+  515.4543693868618,
+  136.4210007469044,
+  32511.10502394492
+ ]
+}

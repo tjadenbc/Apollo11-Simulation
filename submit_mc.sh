@@ -1,5 +1,8 @@
 #!/bin/bash
 # Submit a full sharded Monte Carlo to a SLURM compute cluster.
+# SIM-REPO ADAPTATION (sim plan S5, 2026-10-25; copied from the read-only original):
+# PROJ defaults to $HOME/apollo11 (the sim repo), APOLLO_DELIVERED_PACKAGE is
+# required and injected into every job's env, and preflight runs under that env.
 #
 #   ./submit_mc.sh <outdir> <n_trials> [seed] [n_shards]
 #
@@ -42,9 +45,22 @@ SHARD_TIME=${APOLLO_SHARD_TIME:-${_EST_H}:00:00}
 echo "shard wall-clock limit: $SHARD_TIME  (${_TPS} trials/shard on $WORKERS workers)"
 
 PY=${APOLLO_PY:-$HOME/apollo-venv/bin/python}
-PROJ=${APOLLO_PROJ:-$HOME/apollo11_project}
+PROJ=${APOLLO_PROJ:-$HOME/apollo11}              # the SIM repo (package-driven), not the original
 LOGS=$PROJ/slurm_logs
 mkdir -p "$LOGS"
+
+# DELIVERED PACKAGE (sim plan S5): every job imports apollo11 with
+# APOLLO_DELIVERED_PACKAGE set, so setup, every shard and every Pool worker fly
+# the same package. Required; the path is resolved on the cluster filesystem.
+# APOLLO_DELIVERED_PACKAGE_SHA256 (optional prefix) makes every job refuse any
+# other package.
+PKG=${APOLLO_DELIVERED_PACKAGE:?set APOLLO_DELIVERED_PACKAGE to the package json on the cluster (e.g. nominal_packages/apollo11_nominal_package.json)}
+case "$PKG" in /*) ;; *) PKG="$PROJ/$PKG" ;; esac
+[ -f "$PKG" ] || { echo "REFUSING: package $PKG not found"; exit 7; }
+[ -f "$PROJ/ephemeris/de440.bsp" ] || { echo "REFUSING: $PROJ/ephemeris/de440.bsp missing or a dangling symlink (deploy with rsync -L)"; exit 7; }
+PKG_ENV="APOLLO_DELIVERED_PACKAGE=$PKG"
+[ -n "${APOLLO_DELIVERED_PACKAGE_SHA256:-}" ] && PKG_ENV="$PKG_ENV APOLLO_DELIVERED_PACKAGE_SHA256=$APOLLO_DELIVERED_PACKAGE_SHA256"
+echo "package on every job: $PKG_ENV"
 
 # Optional env prefix injected into every job's command (setup/shard/merge), so a run
 # configuration carried in an environment variable reaches the compute nodes regardless
@@ -52,17 +68,23 @@ mkdir -p "$LOGS"
 # it at import). Default EMPTY => production runs are byte-for-byte unchanged. Set e.g.
 # APOLLO_ENV_PREFIX="APOLLO_NO_LANDING=1" (no-landing comparison) or "APOLLO_HAZARDS=1"
 # (landing + added 1969 hazards, the definitive run).
-WRAP_ENV="${APOLLO_ENV_PREFIX:-}"
-if [ -n "$WRAP_ENV" ]; then
+WRAP_ENV="$PKG_ENV ${APOLLO_ENV_PREFIX:-}"
+if [ -n "${APOLLO_ENV_PREFIX:-}" ]; then
     echo "env prefix on every job: $WRAP_ENV"
 else
     # Loud reminder, not a refusal: the definitive config carries
     # "APOLLO_HAZARDS=1 APOLLO_IGM_ROBUST=1" via APOLLO_ENV_PREFIX; a bare
     # submit silently runs with hazards + IGM-robust OFF (a forgotten prefix
     # once validated a run against the wrong config).
+    # SIM-REPO CORRECTION (2026-10-26): that two-flag prefix is NOT the whole
+    # definitive Jul-16 config. The original's CLAUDE.md also sets
+    # APOLLO_SIVB_RESTART=1 (4.5% per TLI restart, 480 failures in its 10K) and
+    # APOLLO_APS_IGNITION=1; the package supplies the ephemeris, azimuth, DOI GET,
+    # site and splash, and APOLLO_USSA76_ENTRY defaults on. A 10K submitted with
+    # only the two flags (2026-10-25) ran without both hazard overlays.
     echo "WARNING: APOLLO_ENV_PREFIX is EMPTY — env-gated flags (APOLLO_HAZARDS,"
     echo "         APOLLO_IGM_ROBUST, ...) will be OFF on every job. The definitive"
-    echo "         config uses: APOLLO_ENV_PREFIX=\"APOLLO_HAZARDS=1 APOLLO_IGM_ROBUST=1\""
+    echo "         config uses: APOLLO_ENV_PREFIX=\"APOLLO_HAZARDS=1 APOLLO_IGM_ROBUST=1 APOLLO_SIVB_RESTART=1 APOLLO_APS_IGNITION=1\""
 fi
 
 cd "$PROJ"
@@ -75,7 +97,7 @@ cd "$PROJ"
 # ALLOW_DERIVE=1 (the deliberate "yes, re-derive the nominal" choice). The 25-trial tier
 # is exempt — that is where the reference nominal is derived in the first place.
 if [ "$NTRIALS" -gt 25 ] && [ "${ALLOW_DERIVE:-0}" != "1" ]; then
-    if ! "$PY" cluster_run.py preflight "$OUTDIR"; then
+    if ! env $WRAP_ENV "$PY" cluster_run.py preflight "$OUTDIR"; then
         echo ""
         echo "REFUSING TO SCHEDULE: '$OUTDIR' is missing the pinned nominal (files listed above)."
         echo "A >25-trial run would RE-DERIVE the nominal on the cluster (TEI-branch-flip risk)."

@@ -34,7 +34,51 @@ an M-series laptop core / ~625 s on the cluster's EPYC; use main_parallel or
 the cluster pipeline (submit_mc.sh) for production runs.
 """
 from __future__ import annotations
-import os, time, json
+import os, sys, time, json
+
+# DELIVERED PACKAGE AT IMPORT (sim plan S5, fleet execution). With
+# APOLLO_DELIVERED_PACKAGE=<package.json>, EVERY process that imports this module
+# flies that package: the parent, each spawned multiprocessing worker (spawn re-
+# imports the module; the environment is inherited) and each cluster job (the
+# variable rides in APOLLO_ENV_PREFIX). Without it, Pool workers came up unbound
+# and flew the original mission against targets captured from the bound nominal.
+# Here, BEFORE the env-read constants below, the package's import-time environment
+# (delivered.env_for_import: ephemeris, launch delay, azimuth, DOI GET, splash and
+# site) is applied; a different value already in the environment is refused. The
+# targets are bound at the END of the module (delivered.bind_delivered_targets
+# needs the finished module). The path is made absolute for child processes.
+# APOLLO_DELIVERED_PACKAGE_SHA256 (optional, a prefix) refuses any other package.
+_DELIVERED_PACKAGE_PATH = os.environ.get("APOLLO_DELIVERED_PACKAGE") or None
+_DELIVERED_IMPORT_TARGETS = None
+if _DELIVERED_PACKAGE_PATH:
+    _DELIVERED_PACKAGE_PATH = os.path.abspath(_DELIVERED_PACKAGE_PATH)
+    os.environ["APOLLO_DELIVERED_PACKAGE"] = _DELIVERED_PACKAGE_PATH
+    try:
+        import delivered as _delivered_mod
+    except ImportError:
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location(
+            "delivered", os.path.join(os.path.dirname(os.path.abspath(__file__)), "delivered.py"))
+        _delivered_mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_delivered_mod)
+        sys.modules.setdefault("delivered", _delivered_mod)
+    _DELIVERED_IMPORT_TARGETS = _delivered_mod.adapt_delivered_package(
+        _delivered_mod.load_package(_DELIVERED_PACKAGE_PATH))
+    _want_sha = os.environ.get("APOLLO_DELIVERED_PACKAGE_SHA256", "").strip().lower()
+    if _want_sha and not str(_DELIVERED_IMPORT_TARGETS["package_sha256"]).lower().startswith(_want_sha):
+        raise RuntimeError(f"APOLLO_DELIVERED_PACKAGE {_DELIVERED_PACKAGE_PATH} has package_sha256 "
+                           f"{_DELIVERED_IMPORT_TARGETS['package_sha256']}, not the pinned {_want_sha}")
+    for _k, _v in _delivered_mod.env_for_import(_DELIVERED_IMPORT_TARGETS).items():
+        _have = os.environ.get(_k)
+        if _have is not None and _have != _v:
+            try:
+                _same = float(_have) == float(_v)
+            except ValueError:
+                _same = False
+            if not _same:
+                raise RuntimeError(f"{_k}={_have!r} in the environment conflicts with the delivered package "
+                                   f"({_v!r} from {_DELIVERED_PACKAGE_PATH}); unset it or use that package")
+        os.environ[_k] = _v
 import numpy as np
 import pandas as pd
 from scipy.integrate import solve_ivp
@@ -348,11 +392,14 @@ def _precess_cached(T):
     distance. It does NOT vary slowly enough to hold fixed for a whole mission,
     though — over 9 days it moves 1.24 arcsec = 2.3 km — so the key must track T,
     not the run."""
-    key = round(T * 1.0e6)          # ~3.2 s of epoch per key
-    if _PRECESS_MEMO[0] != key:
-        _PRECESS_MEMO[0] = key
-        _PRECESS_MEMO[1] = _precess_j2000_to_date(T)
-    return _PRECESS_MEMO[1]
+    # MEMO DROPPED (sim-side fix, 2026-10-25): round(T * 1e6) centuries is a
+    # 52.6-min window, not 3.2 s, filled at the FIRST epoch asked for in it,
+    # so the Moon ran 0-9.6 m behind, jumped back every 52.6 min, and the
+    # result depended on call order (~1.9 km of TEI ignition over 55 h in
+    # lunar orbit, 38 m over LOI-1 -> LOI-2). Measured: the rebuild is 9.5 us
+    # against 242 us for the Moon-state call it sits in (+4 %). _PRECESS_MEMO
+    # stays defined (delivered.bind_delivered_targets resets it).
+    return _precess_j2000_to_date(T)
 
 
 def _moon_state_jpl(jde):
@@ -1014,6 +1061,20 @@ MSFN_TE_VEL_SIGMA_MS  = 0.04     #   (Vonbun 1966: 8.93 km / 0.127 m/s a-priori)
 MSFN_CA_DEADBAND_KM   = 50.0     # waive slot if est. CA-point miss below (EST)
 MSFN_MCC1_DEFER_DV_MS = 10.0     # MCC-1 defers corrections below this (EST)
 MSFN_TEI_EXEC_SIGMA_MS = 0.20    # TEI knowledge+trim scatter, per-axis 1-sigma
+# ------------------------------------------------------------------
+# APOLLO_DISPERSION_SCALE (2026-10-28) — the paper's fidelity stress test: one
+# scalar multiplying the guidance, navigation and execution dispersions, so a
+# fleet can be flown at x2 or x4 the as-flown scatter with every nominal,
+# target, hazard rate and engine dispersion unchanged. Scales: the MSFN OD
+# knowledge residuals (the translunar and trans-Earth _estimate draws), the
+# burn execution residuals (EXEC_SPS_AXIS_SIGMA_MS, EXEC_RCS_AXIS_SIGMA_MS,
+# MCC_EXEC_RESIDUAL_MS, MSFN_TEI_EXEC_SIGMA_MS) and sample_perturbation's
+# injection and TEI terms (insertion_v_err, tli_pointing_rad, tli_dv_bias_ms,
+# tei_dv_bias_ms). Applied AFTER each draw, so every RNG stream is unchanged
+# and 1.0 is bit-identical. Recorded in run_config, so preflight refuses a
+# shard launched at a different scale than its pinned nominal.
+# ------------------------------------------------------------------
+DISPERSION_SCALE = float(os.environ.get("APOLLO_DISPERSION_SCALE", "1"))
 # --- STM-LinCov OD filter (realism-audit; ported from Artemis I) -----------------
 # The METHOD is nature: a geometry-derived Fisher-information covariance built by
 # propagating the state-transition matrix over each MSFN tracking arc (od_filter.py,
@@ -1155,6 +1216,33 @@ DOI_PERILUNE_ALT_KM  = 15.0    # LM perilune after DOI, where PDI fires (~50,000
 # 45.04 kN on the 15.1-t LM = ~22.4 m/s = the real 23.3. When OFF, the legacy
 # impulse stand-in (synthetic circular-state reconstruction) is bit-identical.
 ENABLE_ASPLANNED_DOI = True
+# PDI SITE TARGETING (P63-style TIG): the LGC's P63 computed the PDI ignition
+# time from the landing-site target; here PDI fired at the descent-orbit
+# perilune whatever the parking-orbit phase, so the nominal landed 43 km long
+# (west) of Site 2 and dispersed trials 48-102 km off. ON: the PDI time is
+# shifted along the descent orbit (secant on the offset from perilune, each
+# step a predicted unperturbed descent, 0.5 s) until the predicted landing is
+# at Site 2's downrange; the trial's own descent then flies from that TIG
+# (its DPS/hover dispersions are the residual). The prediction uses the TRUE
+# LM state: no lunar-orbit navigation error is modelled. OFF => PDI at
+# perilune => bit-identical.
+ENABLE_PDI_SITE_TARGETING = (os.environ.get("APOLLO_PDI_SITE_TARGET", "1") != "0")
+PDI_SITE_DOWNRANGE_TOL_KM = 0.1    # secant stop on the predicted downrange
+PDI_TIG_OFFSET_MAX_S      = 300.0  # |PDI - perilune| bound (~500 km of track)
+# DOI SITE RETARGETING (sim plan S5 fleet finding): PDI targeting alone cannot
+# absorb a large parking-orbit PHASE error. A low dispersed arrival leaves the
+# capture orbit's period off, so at the Apollo-timed DOI GET the descent perilune
+# lands hundreds of km from the site (local 25, seed 42: trials 18 / 21 / 24 needed
+# PDI 435-1425 s from perilune and landed 663-2,395 km off at the 300 s bound).
+# ON: before the loiter ends, the DOI time is shifted along the parking orbit when
+# PDI at the predicted descent perilune would need more than PDI_TIG_OFFSET_SOFT_S
+# (each prediction: the as-planned DOI, the coast to the descent perilune and an
+# unperturbed descent, ~2 s, from one dense coast of the parking orbit), so PDI
+# stays near perilune; PDI targeting then trims the last km. The RTCC computed DOI
+# from the landing site too. OFF => the Apollo-timed DOI GET => bit-identical.
+ENABLE_DOI_SITE_RETARGET  = (os.environ.get("APOLLO_DOI_SITE_RETARGET", "1") != "0")
+PDI_TIG_OFFSET_SOFT_S     = 60.0   # retarget DOI when PDI would need more than this
+DOI_RETARGET_TOL_KM       = 5.0    # secant stop on the predicted downrange (PDI trims the rest)
 LOI2_CIRC_DV_MS      = 48.0    # impulsive LOI-2 dV for the FALLBACK path only (flown path solves its own)
 # Two-burn FLOWN LOI (ENABLE_DOI): LOI-1 ignites this fraction of its burn
 # duration before approach-perilune so the frozen-attitude burn arc is centred on
@@ -1185,6 +1273,26 @@ LOI1_PERI_TARGET_KM  = 111.12   # 60.0 nmi (Table 7-V)
 LOI1_APO_TARGET_KM   = 314.28   # 169.7 nmi
 LOI2_PERI_TARGET_KM  = 100.01   # 54 nmi (the PLANNED target, MSC-00171 §5)
 LOI2_APO_TARGET_KM   = 122.23   # 66 nmi
+# LOI-1 SITE-PLANE CORRECTOR (sim plan S3, dispersed trials with a bound package):
+# the free-return package moves Apollo's Site 2 plane change into LOI-1 (an
+# out-of-plane yaw of the frozen SPS direction, ~2.8 deg). The dispersed
+# re-solve is then 3-DOF (dv, tilt, yaw) with a third residual: the Site 2
+# cross-track from the post-LOI-1 plane coasted to SITE_PLANE_EPOCH_S (the
+# solver's residual). OFF => the in-plane 2-DOF re-solve (the plane change is
+# dropped, ~56 km cross-track at PDI on the Jul-16 package).
+ENABLE_LOI1_SITE_PLANE   = (os.environ.get("APOLLO_LOI1_SITE_PLANE", "1") != "0")
+LOI1_SITE_XTRACK_TOL_KM  = 1.0    # the solver's LOI1_SITE_XTRACK_TOL_KM
+LOI1_ELLIPSE_ACCEPT_KM   = 15.0   # 3-DOF accepts its least-squares best within this when
+                                 # the 1 km ellipse gate is infeasible (a low dispersed
+                                 # arrival perilune caps the capture perilune: seed 42
+                                 # trials 3 / 5 arrive 4.4 / 8.3 km low; LOI-2 re-solves
+                                 # 54 x 66 nmi from what LOI-1 left, and the legacy
+                                 # fall-through accepts any capture above 30 km)
+LOI1_CAPTURE_PERI_FLOOR_KM = 60.0  # ...or, for a deeper shortfall, any capture with the
+                                 # plane met, the apolune inside the band and the
+                                 # perilune at least this (local 25 trial 24 arrived
+                                 # 21 km low: best 90.1 x 315.4 km, plane met, was
+                                 # refused at 15 km and flew the in-plane legacy burn)
 LUNAR_DOI_GET_S      = float(os.environ.get("APOLLO_DOI_GET_S", "365985.0") or 365985.0)
                                   # env-overridable for the per-slot DOI-GET
                                   # sweep (launch-window experiment); unset =>
@@ -1596,6 +1704,115 @@ ENABLE_SPLASH_WATER_CHECK = (os.environ.get("APOLLO_SPLASH_WATER_CHECK", "1") !=
 #   Extremely rare (grossly rev-slipped returns whose ground track rotates onto
 #   land). Env-gated so main_parallel workers inherit it; default OFF =
 #   bit-identical (and a no-op if global-land-mask is not installed).
+# WATER RE-AIM OF THE RECOVERY ZONE (sim repo, 2026-10-26). Each return aims at a
+# zone placed RECOVERY_ZONE_RANGE_KM along its own entry ground track (see the
+# PER-OPPORTUNITY RECOVERY ZONE note at entry). That rule never checked for water:
+# in the package 10Ks one late scan-fallback return (seed 37, trial 8036) put its
+# zone over Thailand and the guidance landed it 4.1 km from the zone, on land.
+# With ENABLE_WATER_ZONE_REAIM, a zone on land or within WATER_ZONE_MARGIN_KM of
+# land slides along the SAME ground track to the water point nearest the design
+# range whose margin circle is all water — but only if the guidance can fly it:
+# each candidate is checked with the entry guidance's own nominal-model prediction
+# from the trial's entry-interface state (phase_entry, no aero dispersions) and
+# accepted when the predicted splash is within WATER_ZONE_MISS_KM of it and the
+# predicted peak g is at most the design-range prediction + WATER_ZONE_G_MARGIN.
+# A fixed range band did not work: entry_range_bench.py showed the short side
+# depends on the entry angle (a 0.3 deg shallow entry misses a 2,600 km target by
+# 47 km at 8.7 g, while nominal and steeper entries reach 2,400 km). This is the
+# entry-range part of Apollo's recovery-area choice (Apollo 11 moved its aim point
+# downrange for weather and flew it with the entry guidance); the RTCC's choice of
+# landing areas when planning TEI and the midcourses is not modeled. No random
+# draws, so only trials whose zone triggers it change; each prediction costs one
+# entry simulation (~1.5-4 min). No acceptable water => the zone is kept
+# (recovery_zone_reaim = "none_found", or "rejected" when water was predicted but
+# failed). Env APOLLO_WATER_ZONE_REAIM=1; default OFF = bit-identical.
+ENABLE_WATER_ZONE_REAIM = (os.environ.get("APOLLO_WATER_ZONE_REAIM", "0") != "0")
+# TRANSLUNAR IMPACT RECOVERY (sim repo, 2026-10-26). The pre-MCC SOI-miss
+# pre-screen (_tlc_gross_miss) ended any trial whose UNCORRECTED translunar
+# periapsis was below -1000 km as "missed_lunar_soi", on the premise that no MCC
+# could recover it. The premise is wrong: the MCC chain projects an impact as a
+# negative perilune altitude precisely so it can target through the impact region,
+# and in the Jul-18 250 (seed 37) all 22 arrivals between -1000 and -500 km were
+# corrected (median 9.8 m/s), while the 4 screened at -1,018 to -1,371 km became
+# full successes with the screen off (MCC 12-72 m/s). The screen only ever fired
+# for slots whose perilune falls inside phase_translunar_coast's fixed 3-day
+# window (Jul-18, Aug-14 at 264,215 s GET); for Jul-16 and Jul-23 (273,215 s) the
+# window ends before perilune and closest_approach_km is the end-of-window
+# distance, so the screen could not fire. With ENABLE_TLC_IMPACT_RECOVERY the
+# impact side is dropped when the MCC chain is on; the far-miss side (> 60,000 km)
+# and the post-MCC verdict (missed_lunar_soi_after_mcc) stay. Env
+# APOLLO_TLC_IMPACT_RECOVERY=1; default OFF = bit-identical.
+ENABLE_TLC_IMPACT_RECOVERY = (os.environ.get("APOLLO_TLC_IMPACT_RECOVERY", "0") != "0")
+# TRANS-EARTH TRIM AUTHORITY (sim repo, 2026-10-27). When the MSFN point correction
+# cannot be used (projected EI point beyond TEMCC_POINT_MAX_KM, no entering pre-stage,
+# no 3-DOF solution, or a solution outside the waive deadband), a trans-Earth slot
+# falls back to the corridor FPA trim, which samples only -8..+8 m/s along track and,
+# with no sign change there, burns the smallest-|error| sample. A return whose
+# projection misses the atmosphere scores +90 at every sample, so each slot burned
+# -8 m/s and three slots ~24 m/s. The Jul-18 10K (seed 37) lost 76 trials to
+# entry_skip_out_or_breakup and 19 to transearth_no_entry_after_mcc this way, all
+# chain-solved TEIs with exactly three 7.8-8.3 m/s burns (Jul-16 10K: 3). Probe
+# re-flies (te_mcc_probe.py) of trials 1448 and 2001: the pre-stage found 19-21 m/s
+# retrograde enters, the point solve converged to entries at -6.2 / -6.0 deg and was
+# rejected by the deadband check, and the +/-8 trim never reached entry; replayed
+# with the trim's samples extended to +/-16 or +/-30 m/s both entered at -6.33 to
+# -6.41 deg on 23-27 m/s total. With ENABLE_TEMCC_WIDE_TRIM the trim keeps its
+# +/-8 m/s samples and, only when they hold no sign change, extends them in the same
+# 2 m/s steps to +/-TEMCC_TRIM_WIDE_MS (the pre-stage's own 30 m/s authority, the
+# SPS being the sized backup for large trans-earth corrections). A trial whose trim
+# brackets within +/-8 flies exactly as before. Env APOLLO_TEMCC_WIDE_TRIM=1;
+# default OFF = bit-identical.
+ENABLE_TEMCC_WIDE_TRIM = (os.environ.get("APOLLO_TEMCC_WIDE_TRIM", "0") != "0")
+TEMCC_TRIM_WIDE_MS = 30.0
+# NO-LOI RETURN, FLOWN (sim repo, 2026-10-28). Three modes end the mission before
+# lunar orbit with a healthy crew: sps_ignition_failure_loi, sm_failure_translunar
+# and missed_lunar_soi_after_mcc. crew_survival.py scores them at fixed rates (0.97,
+# 0.90, 0.98) that assume the arrival hyperbola is a free return, which holds only
+# where the TLI was solved as one (Jul-16). Jul-23's TLI has no free return within
+# S-IVB reach (return-perigee residual >= ~19,000 km), so those rates describe a
+# return that does not exist there. With ENABLE_NOLOI_RETURN the trial flies it:
+#   * passive check: the trial's own arc coasted ballistically through the flyby;
+#   * one impulsive burn, solved by minimum-norm Gauss-Newton on the 3-D dv, that
+#     puts the Earth-return conic on the corridor (MCC_TARGET_FPA_DEG at the 122 km
+#     entry interface), at PC + NOLOI_PC_DELAY_S, and for an SM failure early enough
+#     also at failure + NOLOI_EARLY_DELAY_S (Apollo 13's DPS-1 epoch); the smaller
+#     burn that meets the limits wins;
+#   * engine: the LM DPS (docked stack, the SM's SPS propellant carried as dead
+#     mass) after an SPS no-start or an SM failure; the SPS for a missed SOI (healthy
+#     stack); budget from the rocket equation less NOLOI_RESERVE_DV_MS;
+#   * SM failure only, with ENABLE_LIFEBOAT_LIMIT (below): entry within
+#     NOLOI_LIFEBOAT_MAX_H of the failure (the LM's lifeboat endurance), solved as a
+#     second residual when the corridor-only burn arrives late.
+# A burn of at most NOLOI_TRIM_DV_MS is recorded as a free return (trim class);
+# a larger burn within budget as a powered abort; otherwise no return, which
+# crew_survival.py scores as a loss. Logging and an impulsive solve only: no random
+# draw, so every stream is unchanged. Env APOLLO_NOLOI_RETURN=1; default OFF =
+# bit-identical.
+ENABLE_NOLOI_RETURN = (os.environ.get("APOLLO_NOLOI_RETURN", "0") != "0")
+# LM LIFEBOAT LIMIT (2026-10-28), separate so the free-return geometry effect and the
+# consumables effect report apart: acts only inside ENABLE_NOLOI_RETURN, and only on
+# sm_failure_translunar (the LM is the crew's life support). Off, the no-LOI return
+# flies the minimum burn with no arrival limit and still records noloi_return_h.
+# Env APOLLO_LIFEBOAT_LIMIT=1; default OFF.
+ENABLE_LIFEBOAT_LIMIT = (os.environ.get("APOLLO_LIFEBOAT_LIMIT", "0") != "0")
+NOLOI_PC_DELAY_S = 2.0 * 3600.0       # [convention] the PC+2h abort epoch
+NOLOI_EARLY_DELAY_S = 5.58 * 3600.0   # [primary] Apollo 13: SM failure 55:54:53, DPS-1 ignition 61:29:43 GET
+NOLOI_TRIM_DV_MS = 5.0                # [estimate] trim class: Apollo 13's MCC-5 (2.4 m/s DPS) and MCC-7 (0.9 m/s RCS)
+NOLOI_RESERVE_DV_MS = 30.0            # [estimate] held back for the later corridor trims
+NOLOI_LIFEBOAT_MAX_H = 105.0          # [derived] Apollo 13 ran the LM 85.5 h (55:55 to 141:30 GET) on ~1,770 Ah of its
+                                      #   2,181 Ah and undocked with 410 Ah left (mission report MSC-02680; SP-350
+                                      #   ch. 13.3), ~20 h more at its powered-down rate; water not checked
+NOLOI_COAST_MAX_S = 10.0 * 86400.0    # [convention] search window for the Earth return
+NOLOI_EI_ALT_M = 121_920.0            # [consumer] phase_transearth_coast's entry interface
+RECOVERY_ZONE_RANGE_KM = 2784.0        # EI -> zone design range along the ground track
+WATER_ZONE_MARGIN_KM   = 25.0          # ~3.5x the 99th-pct splash miss (7.2 km, def 10K)
+WATER_ZONE_SEARCH_KM   = (1800.0, 3800.0)   # candidate span along the track (the bench's span)
+WATER_ZONE_STEP_KM     = 10.0
+WATER_ZONE_MISS_KM     = 10.0          # accept: predicted splash within this of the candidate
+WATER_ZONE_G_MARGIN    = 1.0           # ...and predicted peak g <= design-range prediction + this
+WATER_ZONE_G_REF_FALLBACK = 6.5        # g reference when the design-range prediction fails (Apollo ~6.5 g)
+WATER_ZONE_RETRY_KM    = 100.0         # after a rejected candidate, skip this far on that side
+WATER_ZONE_MAX_PRED    = 4             # candidate predictions per trial (plus the design-range one)
 ELS_DROGUE_DEPLOY_M = 7315.0  # 24,000 ft — Apollo drogue deploy (NOT Orion 7600)
 ELS_MAIN_DEPLOY_M   = 3050.0  # ~10,000 ft — Apollo 3-main deploy (NOT Orion 2900)
 ELS_DROGUE_RATE_MS  = 56.0    # ~125 mph — drogue-phase descent rate (Apollo ELS)
@@ -4563,6 +4780,21 @@ def phase_tli(state, t0, perturb=None):
 # Phase: Translunar coast (3-day, 3-body)
 # After TLI, drop the S-IVB. Optional mid-course correction.
 # ============================================================
+def _tlc_gross_miss(periapsis_alt_km):
+    """Pre-MCC SOI-miss pre-screen on the uncorrected translunar coast (see the
+    note at its call in run_mission). With the MCC chain on it rejects a deep
+    impact (< -1000 km) or a pass far outside the SOI (> 60,000 km); with
+    ENABLE_TLC_IMPACT_RECOVERY the impact side is dropped and the post-MCC
+    verdict decides. Without the chain, the original tight gate."""
+    if globals().get("ENABLE_TRANS_LUNAR_MCC", False):
+        impact = (periapsis_alt_km < -1000.0
+                  and not globals().get("ENABLE_TLC_IMPACT_RECOVERY", False))
+        return bool(impact or periapsis_alt_km > 60000.0)
+    # Without the correction chain, keep the original tight gate (the
+    # single-MCC branch has far less correction authority).
+    return bool(periapsis_alt_km < -200 or periapsis_alt_km > 1500)
+
+
 def phase_translunar_coast(state, t0, duration=3*86400):
     """3-day translunar coast with Earth+Moon gravity."""
     # Drop S-IVB mass — what remains is CSM+LM
@@ -4573,7 +4805,7 @@ def phase_translunar_coast(state, t0, duration=3*86400):
 
     def rhs(t, y):
         return np.concatenate([y[3:6], gravity_earth_moon(y[:3], t), [0]])
-    sol = solve_ivp(rhs, (t0, t0+duration), state, method='RK45',
+    sol = _coast_ivp(rhs, (t0, t0+duration), state, method='RK45',
                     rtol=1e-9, atol=1e-1, max_step=600.0, dense_output=True)
     # Find closest approach to Moon
     times = np.linspace(t0, t0+duration, 3000)
@@ -4862,8 +5094,8 @@ def phase_translunar_mcc(state, t0, tlc, perturb,
             s_est = s_true.copy()
             # Draw the per-axis residuals FIRST (unconditionally) so the rng_nav
             # lineage is identical whether or not the OD filter reshapes them.
-            _pos = rng_nav.normal(0.0, MSFN_TL_POS_SIGMA_M, 3)
-            _vel = rng_nav.normal(0.0, MSFN_TL_VEL_SIGMA_MS, 3)
+            _pos = rng_nav.normal(0.0, MSFN_TL_POS_SIGMA_M, 3) * DISPERSION_SCALE
+            _vel = rng_nav.normal(0.0, MSFN_TL_VEL_SIGMA_MS, 3) * DISPERSION_SCALE
             _L = _od_L("tl")
             if _L is None:                       # legacy isotropic diagonal (bit-identical)
                 s_est[:3] += _pos
@@ -4907,7 +5139,7 @@ def phase_translunar_mcc(state, t0, tlc, perturb,
                        else EXEC_SPS_AXIS_SIGMA_MS)
             else:
                 sig = MCC_EXEC_RESIDUAL_MS
-            return rng_exec.normal(0.0, sig, size=3)
+            return rng_exec.normal(0.0, sig * DISPERSION_SCALE, size=3)
 
     def b_plane_of(s_trial, t_start):
         """Coast to perilune; return (B·T_km, B·R_km, peri_alt_km) of the
@@ -4983,7 +5215,7 @@ def phase_translunar_mcc(state, t0, tlc, perturb,
         if t_corr <= cur_t:
             continue
         # Coast to the correction time.
-        sol = solve_ivp(rhs_em, (cur_t, t_corr), cur, method='RK45',
+        sol = _coast_ivp(rhs_em, (cur_t, t_corr), cur, method='RK45',
                         rtol=1e-8, atol=1e-1, max_step=600.0)
         cur = sol.y[:, -1].copy(); cur_t = sol.t[-1]
 
@@ -5066,7 +5298,7 @@ def phase_translunar_mcc(state, t0, tlc, perturb,
                                   "converged": False,
                                   "bplane_miss_km": miss_before})
                 continue
-            dv_vec = dv0 + rng_exec.normal(0.0, MCC_EXEC_RESIDUAL_MS, size=3)
+            dv_vec = dv0 + rng_exec.normal(0.0, MCC_EXEC_RESIDUAL_MS * DISPERSION_SCALE, size=3)
             trial = cur.copy()
             trial[3:6] = trial[3:6] + dv_vec
             bp_after = b_plane_of(trial, cur_t)
@@ -5113,7 +5345,7 @@ def phase_translunar_mcc(state, t0, tlc, perturb,
                               "converged": False})
             continue
         # Apply sourced execution residual (magnitude + small pointing error).
-        dv_vec = dv_mag * v_hat + rng_exec.normal(0.0, MCC_EXEC_RESIDUAL_MS,
+        dv_vec = dv_mag * v_hat + rng_exec.normal(0.0, MCC_EXEC_RESIDUAL_MS * DISPERSION_SCALE,
                                                   size=3)
         trial = cur.copy()
         trial[3:6] = trial[3:6] + dv_vec
@@ -5171,7 +5403,7 @@ def phase_translunar_mcc(state, t0, tlc, perturb,
             dv_mag, v_hat, _conv = solve_burn(cur, cur_t)
             dv_vec = dv_mag * v_hat + (_exec_residual(dv_mag * v_hat)
                                        if use_msfn else
-                                       rng_exec.normal(0.0, MCC_EXEC_RESIDUAL_MS,
+                                       rng_exec.normal(0.0, MCC_EXEC_RESIDUAL_MS * DISPERSION_SCALE,
                                                        size=3))
             trial = cur.copy()
             trial[3:6] = trial[3:6] + dv_vec
@@ -5311,7 +5543,8 @@ def _sps_flag_on():
 # Phase: LOI burn — SPS retrograde, finite duration
 # Burn direction fixed inertially at ignition (real Apollo SPS practice).
 # ============================================================
-def phase_loi(state, t0, dv_target, perturb=None, tilt_deg=0.0):
+def phase_loi(state, t0, dv_target, perturb=None, tilt_deg=0.0,
+              burn_dir_eci=None, yaw_deg=0.0):
     perturb = perturb or {}
     isp = SPS_ISP * perturb.get("sps_isp_factor", 1.0)
     T   = SPS_THRUST * perturb.get("sps_thrust_factor", 1.0)
@@ -5340,6 +5573,21 @@ def phase_loi(state, t0, dv_target, perturb=None, tilt_deg=0.0):
         burn_dir = (burn_dir * np.cos(th)
                     + np.cross(h_hat, burn_dir) * np.sin(th))
         burn_dir /= np.linalg.norm(burn_dir)
+    if yaw_deg != 0.0:
+        # OUT-OF-PLANE yaw (the LOI-1 Site 2 plane change, solver
+        # loi_solver.sps_burn_direction convention): after the in-plane
+        # tilt, rotate toward +h_hat (the Moon-relative orbit normal at
+        # ignition). yaw 0 => this block is skipped => bit-identical.
+        r_rel0 = state[:3] - mr0
+        h_vec = np.cross(r_rel0, v_rel0)
+        h_hat = h_vec / np.linalg.norm(h_vec)
+        ph = np.deg2rad(yaw_deg)
+        burn_dir = burn_dir * np.cos(ph) + h_hat * np.sin(ph)
+        burn_dir /= np.linalg.norm(burn_dir)
+    if burn_dir_eci is not None:
+        # DELIVERED direction (sim plan S3): the pad's frozen inertial thrust
+        # direction flown as given, not re-derived from this ignition state.
+        burn_dir = np.asarray(burn_dir_eci, float) / np.linalg.norm(burn_dir_eci)
 
     def rhs(t, y):
         r = y[:3]; v = y[3:6]; m = y[6]
@@ -5379,7 +5627,7 @@ def _loi_peri_apo(state, t):
 
 
 def _solve_loi_2dof(ig_state, t_ign, peri_target_km, apo_target_km, perturb,
-                    dv_seed=890.0, tilt_seed=5.0):
+                    dv_seed=890.0, tilt_seed=5.0, yaw_deg=0.0):
     """RTCC-style LOI targeting: solve the
     frozen burn DIRECTION (in-plane tilt from anti-velocity) and dv magnitude
     so the INTEGRATED finite burn ends in the PLANNED (perilune, apolune) —
@@ -5390,11 +5638,14 @@ def _solve_loi_2dof(ig_state, t_ign, peri_target_km, apo_target_km, perturb,
     large radial-down component). 2x2 damped-Newton with FD Jacobian; each
     residual eval is one finite-burn integration.
 
+    yaw_deg (default 0 => in-plane, unchanged) holds an out-of-plane yaw
+    FIXED while (dv, tilt) re-solve: the fallback of _solve_loi_3dof.
+
     Returns (dv, tilt_deg, converged, final_state, final_t, burn_time) or
     None if no bound-orbit solution was ever seen."""
     def shoot(dv, tilt):
         s_o, t_o, bt = phase_loi(ig_state.copy(), t_ign, dv, perturb,
-                                 tilt_deg=tilt)
+                                 tilt_deg=tilt, yaw_deg=yaw_deg)
         pa = _loi_peri_apo(s_o, t_o)
         if pa is None:
             return None, (s_o, t_o, bt)
@@ -5432,6 +5683,400 @@ def _solve_loi_2dof(ig_state, t_ign, peri_target_km, apo_target_km, perturb,
     err, xb, (s_o, t_o, bt) = best
     return (float(xb[0]), float(xb[1]), bool(err < 1.0), s_o, t_o, bt)
 
+
+def _loi_site_unit(t_site=None):
+    """Site 2 (SITE_TARGET_LAT/LON_DEG) inertial unit direction at t_site
+    (default SITE_PLANE_EPOCH_S, the PDI epoch) — the Stage-7b construction."""
+    t_site = SITE_PLANE_EPOCH_S if t_site is None else t_site
+    xb, yb, zb = _moon_fixed_axes_ofdate(t_site)
+    la = np.deg2rad(SITE_TARGET_LAT_DEG)
+    lo = np.deg2rad(SITE_TARGET_LON_DEG)
+    u = (np.cos(la) * np.cos(lo) * xb + np.cos(la) * np.sin(lo) * yb
+         + np.sin(la) * zb)
+    return u / np.linalg.norm(u)
+
+
+def _loi_plane_xtrack_km(state, t, u_site):
+    """R_MOON * asin(h_hat . u_site) for the osculating Moon-relative plane at t
+    (km; positive = site on the +h_hat side): no coast."""
+    mr, mv = moon_state(t)
+    h = np.cross(state[:3] - mr, state[3:6] - mv)
+    h = h / np.linalg.norm(h)
+    return R_MOON / 1000.0 * float(np.arcsin(np.clip(np.dot(h, u_site),
+                                                     -1.0, 1.0)))
+
+
+def _loi_site_xtrack_km(state, t, u_site=None, t_site=None):
+    """The LOI-1 site-plane residual (the solver's loi_solver.site_xtrack_at_epoch_km):
+    the post-burn orbit coasted in the truth field (_coast_ivp, ~4 s wall for
+    the ~27 h LOI-1 -> PDI arc) to t_site, then the plane cross-track of the
+    site. LOI-2 and DOI are ignored (in-plane; ~0.2 km of nodal drift)."""
+    if u_site is None and not ENABLE_ASPLANNED_SITE:
+        return float("nan")                     # no landing site (natural-landing package): no residual
+    t_site = SITE_PLANE_EPOCH_S if t_site is None else t_site
+    u_site = _loi_site_unit(t_site) if u_site is None else u_site
+    if t_site > t:
+        def _rhs(tt, y):
+            return np.concatenate([y[3:6], gravity_earth_moon(y[:3], tt), [0]])
+        sol = _coast_ivp(_rhs, (t, t_site), state, method='RK45', rtol=1e-9,
+                         atol=1e-2, max_step=120.0)
+        state, t = sol.y[:, -1], float(sol.t[-1])
+    return _loi_plane_xtrack_km(state, t, u_site)
+
+
+def _loi_plane_change_deg(state_a, t_a, state_b, t_b):
+    """Angle (deg) between the Moon-relative orbit normals of two states."""
+    hs = []
+    for st, tt in ((state_a, t_a), (state_b, t_b)):
+        mr, mv = moon_state(tt)
+        h = np.cross(st[:3] - mr, st[3:6] - mv)
+        hs.append(h / np.linalg.norm(h))
+    return float(np.rad2deg(np.arccos(np.clip(np.dot(hs[0], hs[1]), -1.0, 1.0))))
+
+
+def _solve_loi_3dof(ig_state, t_ign, peri_target_km, apo_target_km, perturb,
+                    dv_seed, tilt_seed, yaw_seed, t_site=None, tol_km=1.0,
+                    tol_xt_km=None, accept_km=None, max_outer=4, max_inner=8):
+    """3-DOF LOI-1 re-solve (dv, in-plane tilt, out-of-plane yaw) to the planned
+    capture ellipse AND the Site 2 plane: residuals [perilune, apolune, site
+    cross-track at t_site] (the solver's solve_loi1, seeded from the delivered
+    burn). The cross-track needs a ~27 h truth coast per evaluation, so the
+    Newton runs on a PROXY: the osculating post-burn plane against the site's
+    t_site direction plus a plane-drift BIAS (coasted minus osculating, ~-5 km
+    on the Jul-16 orbit, 0.2 km/deg sensitivity). Each outer pass re-coasts the
+    inner solution once and updates the bias; 2-3 coasts and ~20-40 burn
+    integrations in all. FD steps/clips as _solve_loi_2dof.
+
+    The inner step is Levenberg-Marquardt on the tolerance-scaled residuals, so
+    an INFEASIBLE ellipse (a low dispersed arrival perilune caps the capture
+    perilune: 109.5 km arrival -> 110.1 km max vs the 111.12 target; at that
+    maximum the perilune row of the Jacobian is singular in tilt) ends at the
+    least-squares best with the apolune and the plane met, instead of a square
+    Newton thrashing or an undamped step stalling. That best is accepted
+    within accept_km (LOI1_ELLIPSE_ACCEPT_KM), or, for a deeper perilune
+    shortfall, when the apolune is inside that band and the capture perilune is
+    at least LOI1_CAPTURE_PERI_FLOOR_KM; the legacy single-dv fall-through would
+    drop the plane change. Passes are ranked plane first (|cross-track| within
+    tol_xt_km), then acceptance, then ellipse error.
+
+    Returns (dv, tilt_deg, converged, final_state, final_t, burn_time, info) with
+    info = {yaw_deg, site_xtrack_km, ellipse_ok, ellipse_err_km, n_coast,
+    n_burn, bias_km}, or None if no bound orbit was ever seen. converged =
+    ellipse within accept_km AND |site_xtrack_km| < tol_xt_km; ellipse_ok =
+    ellipse within tol_km."""
+    t_site = SITE_PLANE_EPOCH_S if t_site is None else t_site
+    tol_xt = LOI1_SITE_XTRACK_TOL_KM if tol_xt_km is None else tol_xt_km
+    accept = LOI1_ELLIPSE_ACCEPT_KM if accept_km is None else accept_km
+    u_site = _loi_site_unit(t_site)
+    n_burn = [0]
+
+    def resid(x, bias):
+        n_burn[0] += 1
+        s_o, t_o, bt = phase_loi(ig_state.copy(), t_ign, float(x[0]), perturb,
+                                 tilt_deg=float(x[1]), yaw_deg=float(x[2]))
+        pa = _loi_peri_apo(s_o, t_o)
+        if pa is None:
+            return None, (s_o, t_o, bt)
+        return np.array([pa[0] - peri_target_km, pa[1] - apo_target_km,
+                         _loi_plane_xtrack_km(s_o, t_o, u_site) + bias]), (s_o, t_o, bt)
+
+    steps = np.array([2.0, 0.5, 0.5])
+    clips = np.array([40.0, 4.0, 4.0])
+    tol_in = np.array([tol_km, tol_km, 0.25 * tol_xt])   # proxy tighter than the gate
+
+    def cost(f):
+        return float(np.sum((f / tol_in) ** 2))
+
+    def inner(x, bias):
+        f0, out0 = resid(x, bias)
+        tries = 0
+        while f0 is None and tries < 5:              # unbound: burn harder, retry
+            x = x + np.array([30.0, 0.0, 0.0])
+            f0, out0 = resid(x, bias)
+            tries += 1
+        if f0 is None:
+            return x, None, out0
+        lam = 1e-3
+        for _ in range(max_inner):
+            if bool(np.all(np.abs(f0) < tol_in)):
+                break
+            J = np.zeros((3, 3))
+            for j in range(3):
+                xp = x.copy()
+                xp[j] += steps[j]
+                fj, _ = resid(xp, bias)
+                if fj is None:
+                    return x, f0, out0
+                J[:, j] = (fj - f0) / steps[j]
+            Js, fs = J / tol_in[:, None], f0 / tol_in
+            H, g = Js.T @ Js, Js.T @ fs
+            D_ = np.diag(np.maximum(np.diag(H), 1e-12))
+            moved = False
+            for _k in range(8):
+                try:
+                    dx = np.linalg.solve(H + lam * D_, -g)
+                except np.linalg.LinAlgError:
+                    lam *= 10.0
+                    continue
+                dx = np.clip(dx, -clips, clips)
+                f1, out1 = resid(x + dx, bias)
+                if f1 is not None and cost(f1) < cost(f0):
+                    c_prev = cost(f0)
+                    x, f0, out0, moved = x + dx, f1, out1, True
+                    lam = max(lam / 10.0, 1e-7)
+                    break
+                lam *= 10.0
+            if not moved or cost(f0) > 0.99 * c_prev:
+                break                                # least-squares best
+        return x, f0, out0
+
+    x = np.array([float(dv_seed), float(tilt_seed), float(yaw_seed)])
+    bias, n_coast, best = 0.0, 0, None
+    for _ in range(max_outer):
+        x, f, out = inner(x, bias)
+        if f is None:
+            break
+        s_o, t_o, bt = out
+        xt = _loi_site_xtrack_km(s_o, t_o, u_site, t_site)
+        n_coast += 1
+        ell = float(max(abs(f[0]), abs(f[1])))
+        ell_acc = bool(ell < accept or (abs(f[1]) < accept and
+                                        f[0] + peri_target_km >= LOI1_CAPTURE_PERI_FLOOR_KM))
+        key = (abs(xt) >= tol_xt, not ell_acc, ell, abs(xt))
+        if best is None or key < best[0]:
+            best = (key, x.copy(), out, xt, ell, bias, ell_acc, float(f[0] + peri_target_km))
+        if abs(xt) < tol_xt and ell_acc:
+            break
+        bias = xt - _loi_plane_xtrack_km(s_o, t_o, u_site)
+    if best is None:
+        return None
+    _, xb, (s_o, t_o, bt), xt, ell, b, ell_acc, peri_km = best
+    info = {"yaw_deg": float(xb[2]), "site_xtrack_km": float(xt),
+            "ellipse_ok": bool(ell < tol_km), "ellipse_err_km": ell,
+            "ellipse_accepted": ell_acc, "capture_peri_km": peri_km,
+            "n_coast": n_coast, "n_burn": n_burn[0], "bias_km": float(b)}
+    return (float(xb[0]), float(xb[1]), bool(ell_acc and abs(xt) < tol_xt),
+            s_o, t_o, bt, info)
+
+
+def _asplanned_doi(state, t):
+    """The AS-PLANNED FINITE DOI from the LM's actual orbit state (see the DOI
+    block in run_mission): 15 s at 10 % DPS throttle, then 40 % for t40 s, the
+    retrograde attitude frozen at ignition, t40 brentq-solved for the PLANNED
+    50,000-ft (15.24 km) pericynthion. Returns (lm_state_7, t_cutoff, t40, dv_mps)
+    or None when the target is not bracketed or the solve fails."""
+    from scipy.optimize import brentq
+    m_lm_full = LM_DESC_TOTAL + LM_ASCT_TOTAL
+    lm0 = np.concatenate([state[:3], state[3:6], [m_lm_full]])
+    _mr_d, _mv_d = moon_state(t)
+    _vrel_d = lm0[3:6] - _mv_d
+    _bdir_doi = -_vrel_d / np.linalg.norm(_vrel_d)
+    _thr10, _thr40 = 0.10 * DPS_THRUST_MAX, 0.40 * DPS_THRUST_MAX
+
+    def _fly_doi(t40, want_state=False):
+        def rhs_doi(tt, y):
+            T_ = _thr10 if (tt - t) < 15.0 else _thr40
+            a_ = (gravity_earth_moon(y[:3], tt)
+                  + T_ * _bdir_doi / max(y[6], 1.0))
+            return np.concatenate([y[3:6], a_, [-T_ / (DPS_ISP * G0)]])
+        s_ = solve_ivp(rhs_doi, (t, t + 15.0 + t40), lm0.copy(),
+                       method='RK45', rtol=1e-8, atol=1e-2,
+                       max_step=1.0)
+        y_ = s_.y[:, -1].copy()
+        pa_ = _loi_peri_apo(y_, float(s_.t[-1]))
+        peri_ = 1.0e9 if pa_ is None else pa_[0]
+        return (y_, float(s_.t[-1]), peri_) if want_state else peri_
+
+    _tgt_peri_doi = 15.24    # 50,000 ft — the PLANNED pericynthion
+    try:
+        _plo, _phi = _fly_doi(4.0), _fly_doi(45.0)
+        if _plo > _tgt_peri_doi > _phi:
+            _t40 = brentq(lambda x: _fly_doi(x) - _tgt_peri_doi,
+                          4.0, 45.0, xtol=0.05, maxiter=18)
+            _y_doi, _t_doi, _peri_doi = _fly_doi(_t40, want_state=True)
+            doi_dv = float(DPS_ISP * G0 * np.log(m_lm_full / _y_doi[6]))
+            return _y_doi, _t_doi, float(_t40), doi_dv
+    except Exception:
+        return None
+    return None
+
+
+def _lunar_coast_rhs(tt, y):
+    return np.concatenate([y[3:6], gravity_earth_moon(y[:3], tt), [0]])
+
+
+def _predict_landing_for_doi(state_at_doi, t_doi):
+    """From the parking-orbit state AT the DOI time: the as-planned DOI, the coast to
+    the descent perilune, and an unperturbed descent with PDI at that perilune.
+    Returns (downrange_km, crossrange_km, v_ground_kms) from Site 2 or None."""
+    d = _asplanned_doi(state_at_doi, t_doi)
+    if d is None:
+        return None
+    y, t1, _, _ = d
+
+    def _peri_ev(tt, yy):
+        mr_e, mv_e = moon_state(tt)
+        rl = yy[:3] - mr_e
+        return float(np.dot(rl, yy[3:6] - mv_e) / np.linalg.norm(rl))
+    _peri_ev.direction = +1
+    _peri_ev.terminal = True
+    sol = _coast_ivp(_lunar_coast_rhs, (t1, t1 + 3 * 3600), y, method='RK45',
+                     rtol=1e-9, atol=1e-2, max_step=60.0, events=_peri_ev)
+    if len(sol.t_events[0]) == 0:
+        return None
+    yp, tp = sol.y_events[0][0], float(sol.t_events[0][0])
+    desc = phase_powered_descent(yp, tp, None, m0_override=float(y[6]))
+    if not desc.get("success"):
+        return None
+    mr, mv = moon_state(tp)
+    r0, v0 = yp[:3] - mr, yp[3:6] - mv
+    n_hat = np.cross(r0, v0)
+    n_hat = n_hat / np.linalg.norm(n_hat)
+    dr, xr = _land_site_error_km(desc, n_hat)
+    return dr, xr, (np.linalg.norm(v0) * R_MOON / np.linalg.norm(r0)) / 1000.0
+
+
+def _retarget_doi_time(state_park, t_park, t_doi0, soft_s=None, tol_km=None,
+                       max_iter=5):
+    """DOI time for Site 2 (see ENABLE_DOI_SITE_RETARGET). One dense coast of the
+    parking orbit from (state_park, t_park) covers DOI times within 0.6 of a period
+    of t_doi0; the landing for DOI at t_doi0 is predicted first, and only when PDI at
+    the descent perilune would need more than soft_s is the DOI shifted (secant on
+    the shift, seeded with the ground speed, the first shift wrapped into half a
+    period). Returns {t_doi, shift_s, n_eval, downrange0_km, downrange_km} or None
+    when the prediction at t_doi0 fails."""
+    soft = PDI_TIG_OFFSET_SOFT_S if soft_s is None else soft_s
+    tol = DOI_RETARGET_TOL_KM if tol_km is None else tol_km
+    mr, mv = moon_state(t_park)
+    r, v = state_park[:3] - mr, state_park[3:6] - mv
+    E = 0.5 * float(np.dot(v, v)) - MU_MOON / np.linalg.norm(r)
+    if E >= 0:
+        return None
+    period = 2.0 * np.pi * np.sqrt((-MU_MOON / (2.0 * E)) ** 3 / MU_MOON)
+    t_lo = max(t_park + 60.0, t_doi0 - 0.6 * period)
+    t_hi = t_doi0 + 0.6 * period
+    s0 = np.array(state_park, float)
+    if t_lo > t_park:
+        s0 = _coast_ivp(_lunar_coast_rhs, (t_park, t_lo), s0, method='RK45', rtol=1e-9,
+                        atol=1e-2, max_step=120.0).y[:, -1].copy()
+    dense = _coast_ivp(_lunar_coast_rhs, (t_lo, t_hi), s0, method='RK45', rtol=1e-9,
+                       atol=1e-2, max_step=120.0, dense_output=True)
+    n_eval = [0]
+
+    def ev(shift):
+        n_eval[0] += 1
+        td = float(np.clip(t_doi0 + shift, t_lo, t_hi))
+        return _predict_landing_for_doi(dense.sol(td), td)
+
+    p0 = ev(0.0)
+    if p0 is None:
+        return None
+    dr0, _, vg = p0
+    out = {"t_doi": float(t_doi0), "shift_s": 0.0, "n_eval": 1, "downrange0_km": dr0,
+           "downrange_km": dr0}
+    if abs(dr0) / vg <= soft:
+        return out
+    sh0, e0 = 0.0, dr0
+    sh1 = -dr0 / vg
+    sh1 = (sh1 + 0.5 * period) % period - 0.5 * period          # nearest pass
+    sh1 = float(np.clip(sh1, t_lo - t_doi0, t_hi - t_doi0))
+    best = (abs(dr0), 0.0, dr0)
+    for _ in range(max_iter):
+        p1 = ev(sh1)
+        if p1 is None:
+            break
+        e1 = p1[0]
+        if abs(e1) < best[0]:
+            best = (abs(e1), sh1, e1)
+        if abs(e1) < tol or abs(sh1 - sh0) < 1e-3:
+            break
+        slope = (e1 - e0) / (sh1 - sh0)
+        if not np.isfinite(slope) or slope <= 0.0:
+            slope = vg
+        sh0, e0 = sh1, e1
+        sh1 = float(np.clip(sh1 - e1 / slope, t_lo - t_doi0, t_hi - t_doi0))
+    out.update({"t_doi": float(t_doi0 + best[1]), "shift_s": float(best[1]),
+                "n_eval": n_eval[0], "downrange_km": float(best[2])})
+    return out
+
+
+def _land_site_error_km(desc, n_hat):
+    """(downrange_km, crossrange_km) of a descent's touchdown from Site 2, in the
+    LM orbit plane with normal n_hat (Moon-relative, inertial): downrange
+    positive = landed PAST the site along the direction of motion (long),
+    crossrange positive = on the +n_hat side. Inertial at touchdown time.
+    NaN for a natural-landing package (ENABLE_ASPLANNED_SITE off: no site)."""
+    if not ENABLE_ASPLANNED_SITE:
+        return float("nan"), float("nan")
+    rf = np.asarray(desc["trajectory_y"], float)[:3, -1]     # Moon-centred
+    u = rf / np.linalg.norm(rf)
+    us = _loi_site_unit(float(desc["final_t"]))
+    dr = float(np.arctan2(np.dot(np.cross(us, u), n_hat), np.dot(us, u)))
+    xr = (float(np.arcsin(np.clip(np.dot(u, n_hat), -1.0, 1.0)))
+          - float(np.arcsin(np.clip(np.dot(us, n_hat), -1.0, 1.0))))
+    return R_MOON / 1000.0 * dr, R_MOON / 1000.0 * xr
+
+
+def _target_pdi_tig(state_peri, t_peri, m0, tol_km=None, max_iter=6,
+                    dt_max=None):
+    """P63-style PDI ignition time: shift PDI along the descent orbit from the
+    perilune (state_peri, t_peri) so the predicted touchdown is at Site 2's
+    downrange. Each evaluation coasts to t_peri + dt (_coast_ivp, either
+    direction) and flies phase_powered_descent with no dispersions (the
+    guidance's nominal model); secant on dt, seeded with the ground speed
+    (measured 1.68 km of downrange per second of TIG). Returns a dict
+    {state, t, dt_s, downrange_pred_km, crossrange_pred_km, n_eval} or None
+    when no candidate descent reached touchdown."""
+    tol = PDI_SITE_DOWNRANGE_TOL_KM if tol_km is None else tol_km
+    dmax = PDI_TIG_OFFSET_MAX_S if dt_max is None else dt_max
+    mr0, mv0 = moon_state(t_peri)
+    r0, v0 = state_peri[:3] - mr0, state_peri[3:6] - mv0
+    n_hat = np.cross(r0, v0)
+    n_hat = n_hat / np.linalg.norm(n_hat)
+    v_ground = (np.linalg.norm(v0) * R_MOON / np.linalg.norm(r0)) / 1000.0
+
+    def _rhs(tt, y):
+        return np.concatenate([y[3:6], gravity_earth_moon(y[:3], tt), [0]])
+
+    n_eval = [0]
+
+    def ev(dt):
+        n_eval[0] += 1
+        tq = t_peri + dt
+        if abs(dt) < 1e-9:
+            y = np.array(state_peri, float).copy()
+        else:
+            sol = _coast_ivp(_rhs, (t_peri, tq), np.array(state_peri, float),
+                             method='RK45', rtol=1e-9, atol=1e-2, max_step=30.0)
+            y = sol.y[:, -1].copy()
+        d = phase_powered_descent(y, tq, None, m0_override=m0)
+        if not d.get("success"):
+            return None
+        dr, xr = _land_site_error_km(d, n_hat)
+        return dr, xr, y, tq
+
+    e0 = ev(0.0)
+    if e0 is None:
+        return None
+    dt0, best = 0.0, (abs(e0[0]), 0.0, e0)
+    if abs(e0[0]) >= tol:
+        dt1 = float(np.clip(-e0[0] / v_ground, -dmax, dmax))
+        for _ in range(max_iter):
+            e1 = ev(dt1)
+            if e1 is None:
+                break
+            if abs(e1[0]) < best[0]:
+                best = (abs(e1[0]), dt1, e1)
+            if abs(e1[0]) < tol or abs(dt1 - dt0) < 1e-6:
+                break
+            slope = (e1[0] - e0[0]) / (dt1 - dt0)
+            if not np.isfinite(slope) or slope <= 0.0:
+                slope = v_ground                  # downrange grows with later TIG
+            dt0, e0 = dt1, e1
+            dt1 = float(np.clip(dt1 - e1[0] / slope, -dmax, dmax))
+    _, dt_b, (dr, xr, y, tq) = best
+    return {"state": y, "t": tq, "dt_s": dt_b, "downrange_pred_km": dr,
+            "crossrange_pred_km": xr, "n_eval": n_eval[0]}
 
 # ============================================================
 # Phase: Powered Descent (the headline integration)
@@ -6042,6 +6687,44 @@ ENABLE_ENTRY_TARGETING = False  # B2: 3-DOF differential corrector at MCC-6 that
 _EI_TARGET = None  # nominal entry-interface target: dict(lat, lon, fpa).
 
 
+def _temcc_trim_dv(fpa_err, wide=False):
+    """Along-track delta-V (m/s) of the trans-Earth corridor FPA trim: sample
+    -8..+8 m/s in 2 m/s steps, bisect the first sign change of fpa_err(dv), else
+    take the smallest-|error| sample. `wide` (ENABLE_TEMCC_WIDE_TRIM): with no
+    sign change in -8..+8, extend the samples in the same steps to
+    +/-TEMCC_TRIM_WIDE_MS before giving up."""
+    # Sample a modest along-track range (these are small trims; entry FPA
+    # is very sensitive, so a few m/s spans the corridor and beyond).
+    grid = np.linspace(-8.0, 8.0, 9)
+    samples = [(dv, fpa_err(dv)) for dv in grid]
+
+    # Find a sign change to bracket the root.
+    def first_bracket(samples):
+        for i in range(len(samples) - 1):
+            a, fa = samples[i]; b, fb = samples[i+1]
+            if np.isfinite(fa) and np.isfinite(fb) and fa * fb < 0:
+                return (a, b)
+        return None
+
+    bracket = first_bracket(samples)
+    if bracket is None and wide:
+        n_side = int(round((TEMCC_TRIM_WIDE_MS - 8.0) / 2.0))
+        lo = [-8.0 - 2.0 * k for k in range(n_side, 0, -1)]
+        hi = [8.0 + 2.0 * k for k in range(1, n_side + 1)]
+        samples = ([(dv, fpa_err(dv)) for dv in lo] + samples
+                   + [(dv, fpa_err(dv)) for dv in hi])
+        bracket = first_bracket(samples)
+    if bracket is not None:
+        try:
+            from scipy.optimize import brentq
+            return brentq(fpa_err, bracket[0], bracket[1],
+                          xtol=0.05, maxiter=12)
+        except Exception:
+            return min(samples, key=lambda s: abs(s[1]))[0]
+    # No sign change in range: take the smallest-|error| sample.
+    return min(samples, key=lambda s: abs(s[1]))[0]
+
+
 def phase_transearth_mcc(post_burn_state, t_post_burn, perturb,
                           target_fpa_deg=MCC_TARGET_FPA_DEG,
                           deadband_steep_deg=MCC_FPA_DEADBAND_STEEP_DEG,
@@ -6107,8 +6790,8 @@ def phase_transearth_mcc(post_burn_state, t_post_burn, perturb,
         if not (use_msfn and globals().get("ENABLE_MSFN_KNOWLEDGE", False)):
             return s_true
         s_est = s_true.copy()
-        _pos = rng_nav.normal(0.0, MSFN_TE_POS_SIGMA_M, 3)
-        _vel = rng_nav.normal(0.0, MSFN_TE_VEL_SIGMA_MS, 3)
+        _pos = rng_nav.normal(0.0, MSFN_TE_POS_SIGMA_M, 3) * DISPERSION_SCALE
+        _vel = rng_nav.normal(0.0, MSFN_TE_VEL_SIGMA_MS, 3) * DISPERSION_SCALE
         _L = _od_L("te")
         if _L is None:                           # legacy isotropic diagonal (bit-identical)
             s_est[:3] += _pos
@@ -6152,27 +6835,9 @@ def phase_transearth_mcc(post_burn_state, t_post_burn, perturb,
                 return 90.0
             return c["fpa_at_entry_deg"] - want_fpa_deg
 
-        # Sample a modest along-track range (these are small trims; entry FPA
-        # is very sensitive, so a few m/s spans the corridor and beyond).
-        grid = np.linspace(-8.0, 8.0, 9)
-        samples = [(dv, fpa_err(dv)) for dv in grid]
-        # Find a sign change to bracket the root.
-        best_dv = 0.0
-        bracket = None
-        for i in range(len(samples) - 1):
-            a, fa = samples[i]; b, fb = samples[i+1]
-            if np.isfinite(fa) and np.isfinite(fb) and fa * fb < 0:
-                bracket = (a, b); break
-        if bracket is not None:
-            try:
-                from scipy.optimize import brentq
-                best_dv = brentq(fpa_err, bracket[0], bracket[1],
-                                 xtol=0.05, maxiter=12)
-            except Exception:
-                best_dv = min(samples, key=lambda s: abs(s[1]))[0]
-        else:
-            # No sign change in range: take the smallest-|error| sample.
-            best_dv = min(samples, key=lambda s: abs(s[1]))[0]
+        # Sample, bracket and bisect (_temcc_trim_dv); ENABLE_TEMCC_WIDE_TRIM
+        # extends the samples when -8..+8 m/s holds no sign change.
+        best_dv = _temcc_trim_dv(fpa_err, globals().get("ENABLE_TEMCC_WIDE_TRIM", False))
         return float(best_dv), v_hat
 
     # --- helper: inject execution error into a commanded correction ---------
@@ -6188,8 +6853,8 @@ def phase_transearth_mcc(post_burn_state, t_post_burn, perturb,
             sig = (EXEC_RCS_AXIS_SIGMA_MS
                    if float(np.linalg.norm(dv_vec)) < EXEC_RCS_DV_LIMIT_MS
                    else EXEC_SPS_AXIS_SIGMA_MS)
-            return dv_vec + rng_exec.normal(0.0, sig, size=3)
-        resid = rng_exec.normal(0.0, MCC_EXEC_RESIDUAL_MS, size=3)
+            return dv_vec + rng_exec.normal(0.0, sig * DISPERSION_SCALE, size=3)
+        resid = rng_exec.normal(0.0, MCC_EXEC_RESIDUAL_MS * DISPERSION_SCALE, size=3)
         return dv_vec + resid
 
     # --- inside/outside the asymmetric corridor deadband --------------------
@@ -7569,6 +8234,91 @@ def _is_land_splash(lat, lon):
         return False
 
 
+def _gc_dest_deg(lat0, lon0, az, d_km):
+    """Point d_km along the great circle from (lat0, lon0) [rad] at azimuth az [rad],
+    spherical R 6,371 km like the recovery-zone placement at entry. Returns
+    (lat, lon) in degrees, lon wrapped to [-180, 180)."""
+    dl = d_km / 6371.0
+    la = np.arcsin(np.sin(lat0) * np.cos(dl) + np.cos(lat0) * np.sin(dl) * np.cos(az))
+    lo = lon0 + np.arctan2(np.sin(az) * np.sin(dl) * np.cos(lat0),
+                           np.cos(dl) - np.sin(lat0) * np.sin(la))
+    return float(np.rad2deg(la)), float((np.rad2deg(lo) + 180.0) % 360.0 - 180.0)
+
+
+def _zone_near_land(lat, lon, margin_km):
+    """True if (lat, lon) [deg], or any of 12 points on its margin_km circle or 8 on
+    the half-margin circle, is land (_is_land_splash: False without the land mask)."""
+    if _is_land_splash(lat, lon):
+        return True
+    la, lo = np.deg2rad(lat), np.deg2rad(lon)
+    for r_km, n_pts in ((margin_km, 12), (0.5 * margin_km, 8)):
+        for k in range(n_pts):
+            if _is_land_splash(*_gc_dest_deg(la, lo, 2.0 * np.pi * k / n_pts, r_km)):
+                return True
+    return False
+
+
+def _predict_entry_splash(state, t, lat, lon):
+    """The entry guidance's own nominal-model prediction (phase_entry with no aero
+    dispersions) from the entry-interface state to a candidate zone (lat, lon
+    [deg]): {success, miss_km, max_g}. phase_entry writes no globals and draws no
+    random numbers, so the trial is unaffected; it gets a copy of the state."""
+    e = phase_entry(np.array(state, dtype=float).copy(), t, {},
+                    target_lat_deg=lat, target_lon_deg=lon)
+    ok = bool(e.get("success"))
+    miss = float("inf")
+    if ok:
+        la1, la2 = np.deg2rad(lat), np.deg2rad(e["splash_lat_deg"])
+        dlo = (np.deg2rad(e["splash_lon_deg"] - lon) + np.pi) % (2 * np.pi) - np.pi
+        a = np.sin((la2 - la1) / 2) ** 2 + np.cos(la1) * np.cos(la2) * np.sin(dlo / 2) ** 2
+        miss = float(R_EARTH / 1000.0 * 2 * np.arcsin(np.sqrt(min(1.0, a))))
+    return {"success": ok, "miss_km": miss, "max_g": float(e.get("max_g", float("nan")))}
+
+
+def _water_zone_reaim(state, t, lat0, lon0, az, predict=None, d0_km=None):
+    """ENABLE_WATER_ZONE_REAIM: search the ground track from the entry interface
+    (lat0, lon0 [rad], heading az [rad]) outward from the design range d0_km in
+    WATER_ZONE_STEP_KM steps (the shorter range first on a tie) for water points
+    whose margin circle is all water, and accept the first one the entry guidance
+    is predicted to fly: predicted splash within WATER_ZONE_MISS_KM and predicted
+    peak g at most the design-range prediction + WATER_ZONE_G_MARGIN. After a
+    rejection that side skips WATER_ZONE_RETRY_KM; at most WATER_ZONE_MAX_PRED
+    candidates are predicted. predict(state, t, lat, lon) -> {success, miss_km,
+    max_g} defaults to _predict_entry_splash. Returns {status: "water" |
+    "rejected" | "none_found", g_design, n_pred} plus lat, lon, d_km, pred_miss_km,
+    pred_g for the accepted (or last rejected) candidate."""
+    predict = predict or _predict_entry_splash
+    d0 = RECOVERY_ZONE_RANGE_KM if d0_km is None else d0_km
+    lo_b, hi_b = WATER_ZONE_SEARCH_KM
+    st = WATER_ZONE_STEP_KM
+    ref = predict(state, t, *_gc_dest_deg(lat0, lon0, az, d0))
+    g_ref = ref["max_g"] if ref["success"] else WATER_ZONE_G_REF_FALLBACK
+    out = {"status": "none_found", "g_design": float(g_ref), "n_pred": 0}
+    skip_to = {-1: 0.0, +1: 0.0}          # per side: candidates closer than this are skipped
+    k_max = int(np.ceil(max(d0 - lo_b, hi_b - d0) / st))
+    for k in range(1, k_max + 1):
+        for sgn in (-1, +1):
+            d = d0 + sgn * k * st
+            if not (lo_b <= d <= hi_b) or k * st < skip_to[sgn]:
+                continue
+            la, lo = _gc_dest_deg(lat0, lon0, az, d)
+            if _zone_near_land(la, lo, WATER_ZONE_MARGIN_KM):
+                continue
+            if out["n_pred"] >= WATER_ZONE_MAX_PRED:
+                return out
+            p = predict(state, t, la, lo)
+            out["n_pred"] += 1
+            out.update(lat=la, lon=lo, d_km=float(d), pred_miss_km=float(p["miss_km"]),
+                       pred_g=float(p["max_g"]))
+            if (p["success"] and p["miss_km"] < WATER_ZONE_MISS_KM
+                    and p["max_g"] <= g_ref + WATER_ZONE_G_MARGIN):
+                out["status"] = "water"
+                return out
+            out["status"] = "rejected"
+            skip_to[sgn] = k * st + WATER_ZONE_RETRY_KM
+    return out
+
+
 def _splashdown_recovery(lat, lon, splash_t, perturb, results, mark):
     """Splashdown + recovery event model (ENABLE_APOLLO_ELS).
 
@@ -7842,9 +8592,15 @@ def run_config():
     cfg = {k: v for k, v in sorted(globals().items())
            if k.startswith("ENABLE_") and isinstance(v, (bool, int, float, str))}
     for k in ("LAUNCH_AZIMUTH_DEG", "SITE_TARGET_LAT_DEG", "SITE_TARGET_LON_DEG",
-              "_LAUNCH_DELAY_H", "TLI_TRANSFER_ANGLE_DEG"):
+              "_LAUNCH_DELAY_H", "TLI_TRANSFER_ANGLE_DEG", "DISPERSION_SCALE"):
         if k in globals():
             cfg[k] = globals()[k]
+    # The delivered package (sim plan S5): which nominal every worker flies. A pinned
+    # nominal derived under one package must not fly shards bound to another.
+    _d = globals().get("_DELIVERED") or {}
+    cfg["DELIVERED_PACKAGE_SHA256"] = _d.get("package_sha256")
+    cfg["DELIVERED_LABEL"] = _d.get("label")
+    cfg["LUNAR_DOI_GET_S"] = globals().get("LUNAR_DOI_GET_S")
     return cfg
 
 
@@ -7873,6 +8629,303 @@ def _exposure_scaled_prob(rate, t_exposure_s, t_ref_s=SM_MISSION_REF_DURATION_S)
     if rate <= 0.0 or t_ref_s <= 0.0:
         return rate
     return 1.0 - (1.0 - rate) ** (max(0.0, t_exposure_s) / t_ref_s)
+
+
+# ============================================================
+# Delivered-package hooks (sim plan S3). apollo11.py is otherwise the verbatim
+# original (README: "hooks vs the original"); every hook is a no-op until
+# delivered.bind_package() sets _DELIVERED, so the unbound module flies as before.
+# ============================================================
+_DELIVERED = None
+_REFLY_HOOK = None   # list -> run_mission appends (event, GET s, 7-state) at each milestone
+
+# Coast integration accuracy (sim plan S4). The TRUTH coasts of the translunar
+# and lunar-orbit legs (the state the vehicle actually flies: translunar coast,
+# MCC slot coasts, the post-chain perilune log, the LOI-1 -> LOI-2 coast, the
+# lunar parking orbit through DOI / descent / stay / ascent / rendezvous, and
+# the TEI opportunity scan) were RK45 at rtol 1e-9 (1e-8 between translunar MCC
+# slots): 1.6 km at perilune, 4.7 km at LOI-2 and 92 km / 57 s of phase at TEI
+# after 28 lunar revs against the solver's DOP853 1e-10 arcs. ON: DOP853 at
+# rtol 1e-10 / atol 1e-3, the call site's max_step / dense_output / events
+# kept. Guidance PREDICTORS (perilune projections, B-plane and CA-point
+# solves, their target captures) keep their own settings: they model the
+# RTCC's prediction, not the truth. APOLLO_TIGHT_COAST=0 -> the original
+# settings (bit-identical to the original apollo11.py).
+ENABLE_TIGHT_COAST = (os.environ.get("APOLLO_TIGHT_COAST", "1") != "0")
+COAST_TIGHT_KW = {"method": "DOP853", "rtol": 1e-10, "atol": 1e-3}
+
+
+def _coast_ivp(rhs, t_span, y0, **kw):
+    """solve_ivp for a truth coast (see ENABLE_TIGHT_COAST)."""
+    if globals().get("ENABLE_TIGHT_COAST", False):
+        kw.update(COAST_TIGHT_KW)
+    return solve_ivp(rhs, t_span, y0, **kw)
+
+
+def _delivered_burn(name):
+    """Delivered burn for 'loi1' | 'loi2' | 'tei' from the bound package, or None."""
+    d = globals().get("_DELIVERED")
+    if not d or (name + "_t_ignition_get_s") not in d:
+        return None
+    out = {"t_ign": float(d[name + "_t_ignition_get_s"]),
+           "duration_s": float(d[name + "_duration_s"]),
+           "dv_mps": float(d[name + "_dv_mps"]),
+           "dir_eci": np.asarray(d[name + "_dir_eci"], float),
+           "state_at_tig": np.asarray(d[name + "_state_at_tig"], float),
+           "state_post": np.asarray(d[name + "_state_post"], float)}
+    if (name + "_tilt_deg") in d:
+        out["tilt_deg"] = float(d[name + "_tilt_deg"])
+    out["yaw_deg"] = float(d.get(name + "_yaw_deg") or 0.0)   # LOI-1 plane change (the frozen dir_eci carries it)
+    return out
+
+
+def _delivered_ei_target():
+    """The bound package's EI target (the dict delivered.bind_delivered_targets
+    sets), or None unbound. main() / main_parallel() start from it instead of None
+    (sim plan S5): a None start made the fleet nominal re-solve its own TEI and pin
+    ITS EI as every trial's target (1,024.4 vs 1,018.0 m/s; EI 208 s late, -6.55 vs
+    -6.50 deg, 1.1 deg further south on the Jul-16 package)."""
+    d = globals().get("_DELIVERED")
+    if not d:
+        return None
+    return {"lat": float(d["ei_lat_gc_deg"]), "lon": float(d["ei_lon_deg"]),
+            "fpa": float(d["ei_fpa_deg"]), "t_ei": float(d["ei_get_s"])}
+
+
+def _refly_record(event, t, state):
+    h = globals().get("_REFLY_HOOK")
+    if h is not None:
+        h.append((str(event), float(t), np.array(state, float).copy()))
+
+
+def _coast_state_at(tlc, t_target):
+    """Translunar-coast state at an exact epoch: the nearest logged sample at or
+    before t_target integrated forward with the coast force model (the fine log
+    grid is ~144 s; the delivered LOI-1 ignition needs the exact epoch)."""
+    logt = np.asarray(tlc["log_t"], float)
+    j = int(np.searchsorted(logt, t_target, side="right") - 1)
+    j = max(0, min(j, len(logt) - 1))
+    y0 = np.asarray(tlc["log_states"][:, j], float).copy()
+    t0 = float(logt[j])
+    if abs(t_target - t0) < 1e-9:
+        return y0
+
+    def _rhs(ti, y):
+        return np.concatenate([y[3:6], gravity_earth_moon(y[:3], ti), [0.0]])
+    sol = solve_ivp(_rhs, (t0, float(t_target)), y0, method='RK45',
+                    rtol=1e-10, atol=1e-3, max_step=10.0)
+    return sol.y[:, -1].copy()
+
+
+def _noloi_coast(state, t0):
+    """ENABLE_NOLOI_RETURN: ballistic coast from (state, t0) through any lunar flyby
+    to the Earth return. Stops at the entry interface, at the first Earth perigee,
+    or at a lunar impact. Returns None on an impact or with no Earth perigee inside
+    NOLOI_COAST_MAX_S; otherwise the end state's Earth conic: h_err, the relative
+    angular-momentum error from the one that puts MCC_TARGET_FPA_DEG on the entry
+    interface at the conic's energy (smooth through the shell, defined above it),
+    the conic perigee altitude and FPA at the shell, and the EI / perigee epoch."""
+    r_ei = R_EARTH + NOLOI_EI_ALT_M
+
+    def rhs(t, y):
+        return np.concatenate([y[3:6], gravity_earth_moon(y[:3], t), [0.0]])
+
+    def ei(t, y):
+        return np.linalg.norm(y[:3]) - r_ei
+    ei.terminal, ei.direction = True, -1
+
+    def perigee(t, y):
+        return float(np.dot(y[:3], y[3:6]))
+    perigee.terminal, perigee.direction = True, +1
+
+    def impact(t, y):
+        return np.linalg.norm(y[:3] - moon_state(t)[0]) - R_MOON
+    impact.terminal, impact.direction = True, -1
+
+    sol = solve_ivp(rhs, (t0, t0 + NOLOI_COAST_MAX_S), np.asarray(state, float), method='RK45',
+                    rtol=1e-9, atol=1e-1, max_step=600.0, events=(ei, perigee, impact))
+    if len(sol.t_events[2]) or not (len(sol.t_events[0]) or len(sol.t_events[1])):
+        return None
+    k = 0 if len(sol.t_events[0]) else 1
+    t_end, y = float(sol.t_events[k][0]), sol.y_events[k][0]
+    r, v = y[:3], y[3:6]
+    rn, vn = np.linalg.norm(r), np.linalg.norm(v)
+    h = np.linalg.norm(np.cross(r, v))
+    eps = 0.5 * vn * vn - MU_EARTH / rn
+    v_ei = np.sqrt(2.0 * (eps + MU_EARTH / r_ei))
+    h_tgt = r_ei * v_ei * np.cos(np.deg2rad(MCC_TARGET_FPA_DEG))
+    e = np.sqrt(max(0.0, 1.0 + 2.0 * eps * h * h / MU_EARTH ** 2))
+    cos_g = h / (r_ei * v_ei)
+    return {"h_err": float((h - h_tgt) / h_tgt), "t_end": t_end, "reached_ei": k == 0,
+            "perigee_alt_km": float((h * h / (MU_EARTH * (1.0 + e)) - R_EARTH) / 1000.0),
+            "fpa_ei_deg": float(-np.rad2deg(np.arccos(cos_g))) if cos_g <= 1.0 else None}
+
+
+def _noloi_solve(y_burn, t_burn, deadline_t=None, x0=None, max_iter=12, tol=5e-5, fd_ms=0.5):
+    """Minimum-norm Gauss-Newton on the impulsive 3-D dv at (y_burn, t_burn) that
+    puts the Earth return on the corridor (_noloi_coast h_err = 0) and, when
+    deadline_t is given and missed, at the entry interface by deadline_t; x0 seeds
+    the dv (default zero). Returns (dv_vec, coast record) or (None, reason)."""
+    def F(dv):
+        y = np.asarray(y_burn, float).copy()
+        y[3:6] = y[3:6] + dv
+        c = _noloi_coast(y, t_burn)
+        if c is None:
+            return None, None
+        r = [c["h_err"] / tol]
+        if deadline_t is not None:        # one-sided, aimed 10 min inside the limit
+            r.append(max(0.0, c["t_end"] - (deadline_t - 600.0)) / 600.0)
+        return np.array(r), c
+
+    x = np.zeros(3) if x0 is None else np.asarray(x0, float).copy()
+    res, c = F(x)
+    if res is None:                       # the passive arc impacts or never returns: seed
+        v_hat = y_burn[3:6] / np.linalg.norm(y_burn[3:6])
+        r_hat = y_burn[:3] / np.linalg.norm(y_burn[:3])
+        for mag in (20.0, 50.0, 100.0, 200.0, 400.0):
+            for d in (v_hat, -v_hat, r_hat, -r_hat):
+                res, c = F(mag * d)
+                if res is not None:
+                    x = mag * d
+                    break
+            if res is not None:
+                break
+        if res is None:
+            return None, "no_return_arc"
+    for _ in range(max_iter + 1):
+        if np.all(np.abs(res) < 1.0):
+            return x, c
+        J = np.zeros((len(res), 3))
+        for k in range(3):
+            e = np.zeros(3)
+            e[k] = fd_ms
+            rk, _ = F(x + e)
+            if rk is None:
+                rk, _ = F(x - e)
+                if rk is None:
+                    return None, "jacobian_undefined"
+                J[:, k] = (res - rk) / fd_ms
+            else:
+                J[:, k] = (rk - res) / fd_ms
+        step = -np.linalg.pinv(J) @ res   # minimum-norm; an inactive deadline row is zero
+        if not np.all(np.isfinite(step)) or not np.any(step):
+            return None, "singular"
+        for damp in (1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125):
+            rt, ct = F(x + damp * step)
+            if rt is not None and np.linalg.norm(rt) < np.linalg.norm(res):
+                x, res, c = x + damp * step, rt, ct
+                break
+        else:
+            return None, "stalled"
+    return None, "no_convergence"
+
+
+def _noloi_return(mode, tlc, t_fail, sps_prop_kg, perilune_alt_km=None, t_tli=None):
+    """ENABLE_NOLOI_RETURN: the return a no-LOI trial can fly (see the flag's block).
+    Returns the noloi_* result columns. An SM failure drawn before TLI cutoff is
+    labelled translunar by the first checkpoint but never left Earth orbit: it is
+    returned unscored (noloi_return None, reason before_tli)."""
+    if t_tli is not None and t_fail < t_tli:
+        return {"noloi_return": None, "noloi_reason": "before_tli"}
+    t_peri = float(tlc["t_closest"])
+    m0 = CSM_CM_MASS + CSM_SM_DRY + max(0.0, float(sps_prop_kg)) + LM_DESC_TOTAL + LM_ASCT_TOTAL
+    if mode == "missed_lunar_soi_after_mcc":
+        engine, prop, isp = "sps", max(0.0, float(sps_prop_kg)), SPS_ISP
+    else:
+        engine, prop, isp = "dps", LM_DESC_PROP, DPS_ISP
+    budget = isp * G0 * np.log(m0 / (m0 - prop)) - NOLOI_RESERVE_DV_MS
+    deadline = (t_fail + NOLOI_LIFEBOAT_MAX_H * 3600.0
+                if mode == "sm_failure_translunar" and globals().get("ENABLE_LIFEBOAT_LIMIT", False) else None)
+    if mode == "missed_lunar_soi_after_mcc" and perilune_alt_km is not None and perilune_alt_km < 0.0:
+        epochs = [max(float(tlc["log_t"][0]), t_peri - 6.0 * 3600.0)]   # avoid the impact before perilune
+    else:
+        epochs = [t_peri + NOLOI_PC_DELAY_S]
+        if mode == "sm_failure_translunar" and t_fail + NOLOI_EARLY_DELAY_S <= t_peri - NOLOI_PC_DELAY_S:
+            epochs.insert(0, t_fail + NOLOI_EARLY_DELAY_S)
+    out = {"noloi_engine": engine, "noloi_budget_ms": float(budget), "noloi_burn_get_h": None,
+           "noloi_dv_ms": None, "noloi_ei_get_h": None, "noloi_ei_fpa_deg": None, "noloi_return_h": None,
+           "noloi_reason": None}
+    passive = _noloi_coast(_coast_state_at(tlc, epochs[0]), epochs[0])
+    out["noloi_passive_perigee_km"] = None if passive is None else passive["perigee_alt_km"]
+    out["noloi_passive_fpa_deg"] = None if passive is None else passive["fpa_ei_deg"]
+    best, reasons = None, []
+    for tb in epochs:
+        y_b = _coast_state_at(tlc, tb)
+        dv, c = _noloi_solve(y_b, tb)
+        if dv is not None and deadline is not None and c["t_end"] > deadline:
+            # continuation: walk the arrival limit in from the corridor-only arrival
+            # 3 h at a time, each solve seeded with the last (one jump stalls on the
+            # long speed-ups)
+            t_lim = c["t_end"]
+            while dv is not None and t_lim > deadline:
+                t_lim = max(deadline, t_lim - 3.0 * 3600.0)
+                dv, c = _noloi_solve(y_b, tb, deadline_t=t_lim, x0=dv)
+                if dv is not None and np.linalg.norm(dv) > budget:
+                    dv, c = None, "over_budget"
+            if dv is None:
+                c = f"over_lifeboat_endurance:{c}"
+        if dv is None:
+            reasons.append(c)
+            continue
+        dvm = float(np.linalg.norm(dv))
+        if dvm > budget:
+            reasons.append("over_budget")
+            continue
+        if best is None or dvm < best[0]:
+            best = (dvm, tb, c)
+    if best is None:
+        out["noloi_return"] = "none"
+        out["noloi_reason"] = ",".join(sorted(set(reasons)))
+        return out
+    dvm, tb, c = best
+    out.update({"noloi_return": ("free_return" if dvm <= NOLOI_TRIM_DV_MS else f"{engine}_abort"),
+                "noloi_burn_get_h": tb / 3600.0, "noloi_dv_ms": dvm, "noloi_ei_get_h": c["t_end"] / 3600.0,
+                "noloi_ei_fpa_deg": c["fpa_ei_deg"], "noloi_return_h": (c["t_end"] - t_fail) / 3600.0})
+    return out
+
+
+def _fly_fixed_tei(state_tei, t_tei, burn_dir, dv_mag, isp, T):
+    """Finite SPS burn of dv_mag along the frozen inertial burn_dir, then the
+    ballistic coast to the 122 km entry interface (run_mission's simulate_tei
+    record shape; the coast at the refinement's 1e-9 tolerance). None without
+    entry or propellant."""
+    m0 = float(state_tei[6])
+    mdot = T / (isp * G0)
+    mp = m0 * (1 - np.exp(-dv_mag / (isp * G0)))
+    if dv_mag <= 0 or mp >= m0 - (CSM_CM_MASS + CSM_SM_DRY) - 50:
+        return None
+    bt = mp / mdot
+    bdir = np.asarray(burn_dir, float) / np.linalg.norm(burn_dir)
+
+    def rhs_burn(ti, y):
+        a = gravity_earth_moon(y[:3], ti) + T * bdir / max(y[6], 1.0)
+        return np.concatenate([y[3:6], a, [-mdot]])
+    sb = solve_ivp(rhs_burn, (t_tei, t_tei + bt), state_tei, method='RK45',
+                   rtol=1e-7, atol=1.0, max_step=2.0)
+    pb = sb.y[:, -1].copy()
+    tp = float(sb.t[-1])
+
+    def rhs_coast(ti, y):
+        return np.concatenate([y[3:6], gravity_earth_moon(y[:3], ti), [0]])
+
+    def entry_evt(ti, y):
+        return np.linalg.norm(y[:3]) - (R_EARTH + 122_000.0)
+    entry_evt.terminal = True
+    entry_evt.direction = -1
+    sc = solve_ivp(rhs_coast, (tp, tp + 7 * 86400), pb, method='DOP853',
+                   rtol=1e-9, atol=1.0, max_step=1800.0, events=entry_evt)
+    if len(sc.t_events[0]) == 0:
+        return None
+    te = float(sc.t_events[0][0])
+    ye = sc.y_events[0][0].copy()
+    rn = np.linalg.norm(ye[:3])
+    vn = np.linalg.norm(ye[3:6])
+    fpa = np.arcsin(np.dot(ye[:3], ye[3:6]) / (rn * vn))
+    return {"entry_state": ye, "entry_t": te,
+            "entry_fpa_deg": float(np.rad2deg(fpa)),
+            "entry_speed_ms": float(vn), "post_burn_state": pb,
+            "burn_time_s": float(bt), "t_post_burn": tp,
+            "dv_mag": float(dv_mag)}
 
 
 def run_mission(perturb=None, capture_trajectories=False):
@@ -7946,6 +8999,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         return results, trajectories
 
     _mark("orbit_insertion", launch.get("t_insertion", 0.0))
+    _refly_record("insertion", launch.get("t_insertion", 0.0), launch["state"])
 
     # 1. Initial post-TLI state from Lambert targeting
     #    (in real Apollo this would be computed by the IU from telemetry;
@@ -8004,6 +9058,8 @@ def run_mission(perturb=None, capture_trajectories=False):
         state, t, tli_dv = initial_state_post_tli(perturb)
     results["tli_dv_ms"] = tli_dv
     _mark("tli", t)
+    _t_tli = float(t)
+    _refly_record("tli_cutoff", t, state)
 
     # Transposition & docking (~30 min after TLI): the CSM separates, turns,
     # and docks with the LM atop the S-IVB to extract it. An unrecovered
@@ -8035,14 +9091,8 @@ def run_mission(perturb=None, capture_trajectories=False):
     # This pre-screen therefore only rejects GROSS misses that no MCC could
     # recover (deep impact, or far outside the lunar SOI ~66,000 km); the real
     # verdict is taken AFTER the MCC chain runs (see post-MCC check below).
-    if globals().get("ENABLE_TRANS_LUNAR_MCC", False):
-        gross_miss = (results["periapsis_alt_km"] < -1000.0
-                      or results["periapsis_alt_km"] > 60000.0)
-    else:
-        # Without the correction chain, keep the original tight gate (the
-        # single-MCC branch below has far less correction authority).
-        gross_miss = (results["periapsis_alt_km"] < -200
-                      or results["periapsis_alt_km"] > 1500)
+    # (Logic in _tlc_gross_miss; see ENABLE_TLC_IMPACT_RECOVERY for the impact side.)
+    gross_miss = _tlc_gross_miss(results["periapsis_alt_km"])
     if gross_miss:
         results["mission_failure"] = "missed_lunar_soi"
         results["full_success"] = False
@@ -8081,7 +9131,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         def _rhs_em(t, y):
             return np.concatenate([y[3:6], gravity_earth_moon(y[:3], t), [0]])
         t_pf = tlmcc["t_perilune"]
-        sol_pf = solve_ivp(_rhs_em, (tlmcc["final_t"], t_pf + 2*3600),
+        sol_pf = _coast_ivp(_rhs_em, (tlmcc["final_t"], t_pf + 2*3600),
                             tlmcc["final_state"], method='RK45',
                             rtol=1e-9, atol=1e-1, max_step=300.0,
                             dense_output=True)
@@ -8107,6 +9157,9 @@ def run_mission(perturb=None, capture_trajectories=False):
                 or results["periapsis_alt_km"] > 1500.0):
             results["mission_failure"] = "missed_lunar_soi_after_mcc"
             results["full_success"] = False
+            if globals().get("ENABLE_NOLOI_RETURN", False):
+                results.update(_noloi_return("missed_lunar_soi_after_mcc", tlc, float(tlc["t_closest"]),
+                                             sps_prop_remaining, results["periapsis_alt_km"]))
             return results, trajectories
     elif abs(actual_periapsis - nominal_periapsis_km) > 2.0:
         t_mcc = t + 30 * 3600
@@ -8187,7 +9240,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         periapsis_event.terminal = False
         periapsis_event.direction = +1     # transitioning from -ve to +ve
 
-        sol_post = solve_ivp(rhs_em, (t_mcc_actual, t_mcc_actual + 80*3600),
+        sol_post = _coast_ivp(rhs_em, (t_mcc_actual, t_mcc_actual + 80*3600),
                               state_mcc, method='RK45', rtol=1e-9, atol=1e-1,
                               max_step=300.0, dense_output=True,
                               events=periapsis_event)
@@ -8239,6 +9292,9 @@ def run_mission(perturb=None, capture_trajectories=False):
     # Apollo-13-style lifeboat abort available). NOTE: `t` still holds the
     # TLI cutoff epoch here — the coast's end time lives in tlc["t_closest"].
     if _sm_check(float(tlc.get("t_closest", t)), "sm_failure_translunar"):
+        if globals().get("ENABLE_NOLOI_RETURN", False):
+            results.update(_noloi_return("sm_failure_translunar", tlc, _sm_t, sps_prop_remaining,
+                                         t_tli=_t_tli))
         return results, trajectories
 
     # SPS ignition failure at LOI (new hazard, default-OFF): a no-start on the single
@@ -8249,6 +9305,9 @@ def run_mission(perturb=None, capture_trajectories=False):
             _hazard_hit(SPS_IGNITION_FAILURE_PROB, _SALT_SPS_IGNITION, t, state):
         results["full_success"] = False
         results["mission_failure"] = "sps_ignition_failure_loi"
+        if globals().get("ENABLE_NOLOI_RETURN", False):
+            results.update(_noloi_return("sps_ignition_failure_loi", tlc, float(tlc.get("t_closest", t)),
+                                         sps_prop_remaining))
         return results, trajectories
     # 4. LOI — physically FLOWN two-burn lunar orbit insertion (Apollo-faithful):
     #    LOI-1 captures into a ~314 x 113 km ellipse (Apollo: 889 m/s, 169.6x60.9
@@ -8264,6 +9323,13 @@ def run_mission(perturb=None, capture_trajectories=False):
     #    crashes. Gated on ENABLE_DOI (the realistic chain).
     idx_closest = int(np.argmin(tlc["moon_distances_km"]))
     t_closest = tlc["t_closest"]
+    _refly_record("perilune", tlc["log_t"][idx_closest],
+                  tlc["log_states"][:, idx_closest])
+    if (globals().get("_REFLY_HOOK") is not None and globals().get("_DELIVERED")
+            and tlc["log_t"][0] <= _DELIVERED["perilune_get_s"] <= tlc["log_t"][-1]):
+        # the log grid is ~13 s: also record the state AT the delivered epoch
+        _refly_record("perilune_at_delivered_epoch", _DELIVERED["perilune_get_s"],
+                      _coast_state_at(tlc, float(_DELIVERED["perilune_get_s"])))
     # publish the SPS-prop ledger for the droop model's frac
     # (no-op when the droop/tail-off/ullage flags are off — phase_loi never reads it then).
     globals()["_SPS_PROP_REMAINING"] = sps_prop_remaining
@@ -8311,7 +9377,73 @@ def run_mission(perturb=None, capture_trajectories=False):
             ig_state[6] = stack_mass
 
             _asplanned_ok = False
-            if globals().get("ENABLE_ASPLANNED_LOI", False):
+            _dlv1 = _delivered_burn("loi1")
+            if _dlv1 is not None and globals().get("ENABLE_ASPLANNED_LOI", False):
+                # DELIVERED LOI-1 (sim plan S3): the pad's ignition lead before
+                # THIS trial's perilune, from the coast integrated to that exact
+                # epoch (the log grid is ~144 s). Nominal: the delivered dv and
+                # frozen direction flown open-loop. Dispersed: the 2-DOF (dv,
+                # tilt) corrector re-targets the planned ellipse from the
+                # delivered seed (the RTCC re-solved the pad from tracking).
+                # With ENABLE_LOI1_SITE_PLANE the dispersed re-solve is 3-DOF
+                # (dv, tilt, yaw; + the Site 2 cross-track at PDI), so the plane
+                # change the package put in LOI-1 is re-solved, not dropped; if
+                # it does not converge, the 2-DOF re-solves (dv, tilt) with the
+                # best yaw held fixed.
+                _lead1 = float(_DELIVERED["perilune_get_s"]) - _dlv1["t_ign"]
+                _t_loi_ap = (_dlv1["t_ign"] if not perturb
+                             else float(t_closest) - _lead1)
+                _ig_ap = _coast_state_at(tlc, _t_loi_ap)
+                _ig_ap[6] = stack_mass
+                if not perturb:
+                    _s1, _t1, _bt1 = phase_loi(_ig_ap.copy(), _t_loi_ap,
+                                               _dlv1["dv_mps"], perturb,
+                                               tilt_deg=_dlv1["tilt_deg"],
+                                               burn_dir_eci=_dlv1["dir_eci"])
+                    _sol_l1 = (_dlv1["dv_mps"], _dlv1["tilt_deg"], True,
+                               _s1, _t1, _bt1)
+                    results["loi1_source"] = "delivered_open_loop"
+                    results["loi1_yaw_deg"] = _dlv1["yaw_deg"]
+                    results["loi1_site_xtrack_km"] = _loi_site_xtrack_km(_s1, _t1)
+                elif (globals().get("ENABLE_LOI1_SITE_PLANE", False)
+                        and _dlv1["yaw_deg"] != 0.0):
+                    _sol_l1 = _solve_loi_3dof(_ig_ap, _t_loi_ap,
+                                              LOI1_PERI_TARGET_KM,
+                                              LOI1_APO_TARGET_KM, perturb,
+                                              dv_seed=_dlv1["dv_mps"],
+                                              tilt_seed=_dlv1["tilt_deg"],
+                                              yaw_seed=_dlv1["yaw_deg"])
+                    results["loi1_source"] = "delivered_seed_3dof"
+                    if _sol_l1 is not None:
+                        _i3 = _sol_l1[6]
+                        results["loi1_yaw_deg"] = _i3["yaw_deg"]
+                        results["loi1_site_xtrack_km"] = _i3["site_xtrack_km"]
+                        results["loi1_3dof_coasts"] = _i3["n_coast"]
+                        results["loi1_3dof_burns"] = _i3["n_burn"]
+                        results["loi1_ellipse_err_km"] = _i3["ellipse_err_km"]
+                    if _sol_l1 is None or not _sol_l1[2]:
+                        _yaw_fb = (_sol_l1[6]["yaw_deg"] if _sol_l1 is not None
+                                   else _dlv1["yaw_deg"])
+                        _sol_l1 = _solve_loi_2dof(_ig_ap, _t_loi_ap,
+                                                  LOI1_PERI_TARGET_KM,
+                                                  LOI1_APO_TARGET_KM, perturb,
+                                                  dv_seed=_dlv1["dv_mps"],
+                                                  tilt_seed=_dlv1["tilt_deg"],
+                                                  yaw_deg=_yaw_fb)
+                        results["loi1_source"] = "delivered_seed_2dof_yaw_held"
+                        results["loi1_yaw_deg"] = _yaw_fb
+                        if _sol_l1 is not None:
+                            results["loi1_site_xtrack_km"] = _loi_site_xtrack_km(
+                                _sol_l1[3], _sol_l1[4])
+                else:
+                    _sol_l1 = _solve_loi_2dof(_ig_ap, _t_loi_ap,
+                                              LOI1_PERI_TARGET_KM,
+                                              LOI1_APO_TARGET_KM, perturb,
+                                              dv_seed=_dlv1["dv_mps"],
+                                              tilt_seed=_dlv1["tilt_deg"])
+                    results["loi1_source"] = "delivered_seed_2dof"
+                _asplanned_ok = _sol_l1 is not None and _sol_l1[2]
+            elif globals().get("ENABLE_ASPLANNED_LOI", False):
                 # AS-PLANNED LOI-1 (see the flag block): RTCC-style (dv, tilt)
                 # solve to the planned 169.7 x 60.0 capture ellipse, ignited
                 # at the REAL pad lead (224.6 s before CA / 357.5 s burn =
@@ -8329,8 +9461,10 @@ def run_mission(perturb=None, capture_trajectories=False):
                 _asplanned_ok = _sol_l1 is not None and _sol_l1[2]
             if _asplanned_ok:
                 t_loi = _t_loi_ap
-                loi1_dv, _l1_tilt, _, state, t, loi1_burn = _sol_l1
+                loi1_dv, _l1_tilt, _, state, t, loi1_burn = _sol_l1[:6]
                 _mark("loi", t_loi)
+                _refly_record("loi1_ignition", t_loi, _ig_ap)
+                _refly_record("loi1_cutoff", t, state)
                 m_pre1 = _ig_ap[6]
                 sps_prop_remaining = max(0.0, sps_prop_remaining
                                          - (m_pre1 - state[6]))
@@ -8376,11 +9510,34 @@ def run_mission(perturb=None, capture_trajectories=False):
                 results["loi_dv_ms"] = loi1_dv
                 results["loi_burn_time_s"] = loi1_burn
 
+            if _dlv1 is not None and globals().get("ENABLE_ASPLANNED_LOI", False):
+                # what FLEW: the plane change of the flown LOI-1, and on a fall-
+                # through to the legacy single-dv burn (the delivered-seed solve
+                # missed the ellipse) the source, yaw and site cross-track of
+                # that in-plane burn, not of the failed solve
+                if not _asplanned_ok:
+                    results["loi1_source_failed"] = results.get("loi1_source")
+                    results["loi1_source"] = "legacy_single_dv"
+                    results["loi1_yaw_deg"] = 0.0
+                    results["loi1_site_xtrack_km"] = _loi_site_xtrack_km(state, t)
+                results["loi1_plane_change_deg"] = _loi_plane_change_deg(
+                    _ig_ap if _asplanned_ok else ig_state, t_loi, state, t)
+
             pae1 = _peri_apo_ecc(state, t)
             if pae1 is None or pae1[0] < 30.0:
                 raise RuntimeError("LOI-1 did not capture into a valid orbit")
 
-            if _asplanned_ok:
+            _dlv2 = _delivered_burn("loi2") if _asplanned_ok else None
+            if _dlv2 is not None and not perturb:
+                # DELIVERED LOI-2 (sim plan S3, nominal): coast to the delivered
+                # ignition epoch (the second perilune after LOI-1), then fly the
+                # delivered dv and frozen direction open-loop below.
+                sol_c = _coast_ivp(rhs_lunar, (t, _dlv2["t_ign"]), state,
+                                  method='RK45', rtol=1e-9, atol=1e-2,
+                                  max_step=60.0)
+                state = sol_c.y[:, -1].copy()
+                t = float(sol_c.t[-1])
+            elif _asplanned_ok:
                 # AS-PLANNED inter-burn coast: TWO revolutions ("initiated two
                 # revolutions later" — the real LOI-2 came 4.36 h after LOI-1).
                 def _pev2(tt, y):
@@ -8389,7 +9546,7 @@ def run_mission(perturb=None, capture_trajectories=False):
                     return float(np.dot(rl, vl) / np.linalg.norm(rl))
                 _pev2.direction = +1
                 _pev2.terminal = False
-                sol_c = solve_ivp(rhs_lunar, (t, t + 7*3600), state,
+                sol_c = _coast_ivp(rhs_lunar, (t, t + 7*3600), state,
                                   method='RK45', rtol=1e-9, atol=1e-2,
                                   max_step=60.0, events=_pev2,
                                   dense_output=True)
@@ -8405,7 +9562,7 @@ def run_mission(perturb=None, capture_trajectories=False):
                 state = np.concatenate([_y[:6], [state[6]]])
             else:
                 # Coast ~1 rev to the capture-ellipse perilune (LOI-2 ignition point).
-                sol_c = solve_ivp(rhs_lunar, (t, t + 4*3600), state, method='RK45',
+                sol_c = _coast_ivp(rhs_lunar, (t, t + 4*3600), state, method='RK45',
                                   rtol=1e-9, atol=1e-2, max_step=60.0,
                                   events=perilune_event)
                 if len(sol_c.t_events[0]) > 0:
@@ -8415,16 +9572,33 @@ def run_mission(perturb=None, capture_trajectories=False):
 
             _l2_done = False
             if _asplanned_ok:
-                # AS-PLANNED LOI-2: (dv, tilt) solve to the PLANNED 66 x 54 nmi
-                # ellipse (deliberately elliptical; potential drift circularizes
-                # it by rendezvous — the R2-model design).
-                _sol_l2 = _solve_loi_2dof(state, t, LOI2_PERI_TARGET_KM,
-                                          LOI2_APO_TARGET_KM, perturb,
-                                          dv_seed=50.0, tilt_seed=0.0)
+                if _dlv2 is not None and not perturb:
+                    _s2, _t2, _bt2 = phase_loi(state.copy(), t, _dlv2["dv_mps"],
+                                               perturb,
+                                               tilt_deg=_dlv2["tilt_deg"],
+                                               burn_dir_eci=_dlv2["dir_eci"])
+                    _sol_l2 = (_dlv2["dv_mps"], _dlv2["tilt_deg"], True,
+                               _s2, _t2, _bt2)
+                    results["loi2_source"] = "delivered_open_loop"
+                else:
+                    # AS-PLANNED LOI-2: (dv, tilt) solve to the PLANNED 66 x 54 nmi
+                    # ellipse (deliberately elliptical; potential drift circularizes
+                    # it by rendezvous — the R2-model design). Seeded from the
+                    # delivered burn when a package is bound.
+                    _sol_l2 = _solve_loi_2dof(
+                        state, t, LOI2_PERI_TARGET_KM, LOI2_APO_TARGET_KM,
+                        perturb,
+                        dv_seed=(_dlv2["dv_mps"] if _dlv2 is not None else 50.0),
+                        tilt_seed=(_dlv2["tilt_deg"] if _dlv2 is not None
+                                   else 0.0))
+                    if _dlv2 is not None:
+                        results["loi2_source"] = "delivered_seed_2dof"
                 if _sol_l2 is not None and _sol_l2[2]:
                     _mark("loi2", t)
+                    _refly_record("loi2_ignition", t, state)
                     m_pre2 = state[6]
                     loi2_dv, _l2_tilt, _, state, t, loi2_burn = _sol_l2
+                    _refly_record("loi2_cutoff", t, state)
                     sps_prop_remaining = max(0.0, sps_prop_remaining
                                              - (m_pre2 - state[6]))
                     results["loi2_circ_dv_ms"] = loi2_dv
@@ -8498,7 +9672,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         # landing mission — isolating the landing burden for the Artemis comparison.
         _t_nl = max(t, TEI_PLAN_GET_S - 1.5 * 3600.0)
         if _t_nl > t:
-            _sol_nl = solve_ivp(rhs_lunar, (t, _t_nl), state,
+            _sol_nl = _coast_ivp(rhs_lunar, (t, _t_nl), state,
                                 method='RK45', rtol=1e-9, atol=1e-2, max_step=120.0)
             state = _sol_nl.y[:, -1].copy(); t = float(_sol_nl.t[-1])
         t_loi_end = t
@@ -8514,10 +9688,21 @@ def run_mission(perturb=None, capture_trajectories=False):
             _coast = LUNAR_PARK_COAST_S if ENABLE_REAL_EPHEMERIS else 0.0
             if (globals().get("ENABLE_ASPLANNED_LOI", False)
                     and ENABLE_REAL_EPHEMERIS and loi_flown):
-                # As-planned timeline anchor (see LUNAR_DOI_GET_S).
-                _coast = max(0.0, LUNAR_DOI_GET_S - t)
+                # As-planned timeline anchor (see LUNAR_DOI_GET_S), shifted along
+                # the parking orbit for Site 2 when ENABLE_DOI_SITE_RETARGET.
+                _t_doi_plan = LUNAR_DOI_GET_S
+                if (globals().get("ENABLE_DOI_SITE_RETARGET", False)
+                        and globals().get("ENABLE_ASPLANNED_DOI", False)
+                        and LUNAR_DOI_GET_S > t):
+                    _rt = _retarget_doi_time(state, t, LUNAR_DOI_GET_S)
+                    if _rt is not None:
+                        _t_doi_plan = _rt["t_doi"]
+                        results["doi_retarget_s"] = _rt["shift_s"]
+                        results["doi_retarget_evals"] = _rt["n_eval"]
+                        results["doi_downrange_at_plan_km"] = _rt["downrange0_km"]
+                _coast = max(0.0, _t_doi_plan - t)
             if _coast > 0:
-                sol_loiter = solve_ivp(rhs_lunar, (t, t + _coast), state,
+                sol_loiter = _coast_ivp(rhs_lunar, (t, t + _coast), state,
                                        method='RK45', rtol=1e-9, atol=1e-2, max_step=120.0)
                 state = sol_loiter.y[:, -1].copy()
                 t = float(sol_loiter.t[-1])
@@ -8565,45 +9750,17 @@ def run_mission(perturb=None, capture_trajectories=False):
                 # reconstructed a SYNTHETIC circular state (v=sqrt(mu/r)), wrong
                 # on the genuine 66x54 ellipse (a synthetic stand-in charge).
                 # Retrograde attitude frozen at ignition (30-s arc).
-                m_lm_full = LM_DESC_TOTAL + LM_ASCT_TOTAL
-                lm0 = np.concatenate([state[:3], state[3:6], [m_lm_full]])
-                _mr_d, _mv_d = moon_state(t)
-                _vrel_d = lm0[3:6] - _mv_d
-                _bdir_doi = -_vrel_d / np.linalg.norm(_vrel_d)
-                _thr10, _thr40 = 0.10 * DPS_THRUST_MAX, 0.40 * DPS_THRUST_MAX
-
-                def _fly_doi(t40, want_state=False):
-                    def rhs_doi(tt, y):
-                        T_ = _thr10 if (tt - t) < 15.0 else _thr40
-                        a_ = (gravity_earth_moon(y[:3], tt)
-                              + T_ * _bdir_doi / max(y[6], 1.0))
-                        return np.concatenate([y[3:6], a_, [-T_ / (DPS_ISP * G0)]])
-                    s_ = solve_ivp(rhs_doi, (t, t + 15.0 + t40), lm0.copy(),
-                                   method='RK45', rtol=1e-8, atol=1e-2,
-                                   max_step=1.0)
-                    y_ = s_.y[:, -1].copy()
-                    pa_ = _loi_peri_apo(y_, float(s_.t[-1]))
-                    peri_ = 1.0e9 if pa_ is None else pa_[0]
-                    return (y_, float(s_.t[-1]), peri_) if want_state else peri_
-
-                _tgt_peri_doi = 15.24    # 50,000 ft — the PLANNED pericynthion
-                try:
-                    _plo, _phi = _fly_doi(4.0), _fly_doi(45.0)
-                    if _plo > _tgt_peri_doi > _phi:
-                        _t40 = brentq(lambda x: _fly_doi(x) - _tgt_peri_doi,
-                                      4.0, 45.0, xtol=0.05, maxiter=18)
-                        _y_doi, _t_doi, _peri_doi = _fly_doi(_t40,
-                                                             want_state=True)
-                        doi_dv = float(DPS_ISP * G0
-                                       * np.log(m_lm_full / _y_doi[6]))
-                        results["doi_dv_ms"] = doi_dv
-                        results["doi_burn_time_s"] = 15.0 + float(_t40)
-                        descent_m0 = float(_y_doi[6])
-                        lm_state = _y_doi
-                        t = _t_doi
-                        _doi_done = True
-                except Exception:
-                    _doi_done = False
+                # (The burn itself is _asplanned_doi, shared with the DOI
+                # retargeting predictor; same integration and brentq as before.)
+                _doi = _asplanned_doi(state, t)
+                if _doi is not None:
+                    _y_doi, _t_doi, _t40, doi_dv = _doi
+                    results["doi_dv_ms"] = doi_dv
+                    results["doi_burn_time_s"] = 15.0 + float(_t40)
+                    descent_m0 = float(_y_doi[6])
+                    lm_state = _y_doi
+                    t = _t_doi
+                    _doi_done = True
             if not _doi_done:
                 # DOI: a small retrograde DPS impulse lowering ONLY the LM perilune
                 # to ~15 km, where PDI fires (the current point becomes apoapsis of
@@ -8623,7 +9780,7 @@ def run_mission(perturb=None, capture_trajectories=False):
                     [descent_m0]])
 
             # Coast the LM down to the ~15 km perilune for PDI.
-            sol_lo = solve_ivp(rhs_lunar, (t, t + 3*3600), lm_state,
+            sol_lo = _coast_ivp(rhs_lunar, (t, t + 3*3600), lm_state,
                                method='RK45', rtol=1e-9, atol=1e-2,
                                max_step=60.0, events=perilune_event,
                                dense_output=capture_trajectories)
@@ -8632,7 +9789,7 @@ def run_mission(perturb=None, capture_trajectories=False):
             csm_state_at_loi = state.copy()
             csm_state_at_loi[6] = CSM_CM_MASS + CSM_SM_DRY + sps_prop_remaining
             descent_m0 = None
-            sol_lo = solve_ivp(rhs_lunar, (t, t + 3*3600), state,
+            sol_lo = _coast_ivp(rhs_lunar, (t, t + 3*3600), state,
                                method='RK45', rtol=1e-9, atol=1e-2,
                                max_step=60.0, events=perilune_event,
                                dense_output=capture_trajectories)
@@ -8644,6 +9801,22 @@ def run_mission(perturb=None, capture_trajectories=False):
             state, t = sol_lo.y[:, -1], sol_lo.t[-1]
         if capture_trajectories:
             trajectories["lunar_orbit"] = (sol_lo.t, sol_lo.y)
+
+        # PDI SITE TARGETING (see ENABLE_PDI_SITE_TARGETING): the P63-style TIG
+        # along the descent orbit for Site 2's downrange, from the perilune.
+        _mr_pdi, _mv_pdi = moon_state(t)
+        _n_pdi = np.cross(state[:3] - _mr_pdi, state[3:6] - _mv_pdi)
+        _n_pdi = _n_pdi / np.linalg.norm(_n_pdi)
+        if (globals().get("ENABLE_PDI_SITE_TARGETING", False)
+                and globals().get("ENABLE_DOI", False) and _doi_done):
+            _tig = _target_pdi_tig(state, t, descent_m0)
+            if _tig is not None:
+                results["pdi_tig_offset_s"] = _tig["dt_s"]
+                results["pdi_downrange_pred_km"] = _tig["downrange_pred_km"]
+                results["pdi_tig_evals"] = _tig["n_eval"]
+                state = np.concatenate([_tig["state"][:6], [state[6]]])
+                t = _tig["t"]
+        results["pdi_get_s"] = float(t)
 
         # 6. Powered descent
         # SM systems check: event during LOI/parking-orbit phase (LM attached).
@@ -8671,6 +9844,9 @@ def run_mission(perturb=None, capture_trajectories=False):
         results["land_lon_deg"]          = desc["land_lon_deg"]
         if "land_downrange_err_m" in desc:
             results["land_downrange_err_m"] = desc["land_downrange_err_m"]
+        # touchdown vs Site 2 in the LM's track (downrange + = long, past the site)
+        (results["land_site_downrange_km"],
+         results["land_site_crossrange_km"]) = _land_site_error_km(desc, _n_pdi)
         t = desc["final_t"]
 
         # ---- Apollo 11-specific descent events: record + conditional escalation
@@ -8746,7 +9922,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         # 8. LM ascent — insert into the CSM orbital plane (timed liftoff).
         # Propagate the CSM to ascent time and extract its Moon-relative orbital-
         # plane normal so the ascent steers into that plane.
-        sol_csm_asc = solve_ivp(rhs_lunar, (t_loi_end, t), csm_state_at_loi,
+        sol_csm_asc = _coast_ivp(rhs_lunar, (t_loi_end, t), csm_state_at_loi,
                                 method='RK45', rtol=1e-9, atol=1e-2, max_step=120.0)
         csm_asc = sol_csm_asc.y[:, -1]
         mr_asc, mv_asc = moon_state(t)
@@ -8786,7 +9962,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         # the nominal coelliptic rendezvous budget, and check against available
         # LM propellant (APS residual + RCS budget). A failure is LM-crew-only.
         if globals().get("ENABLE_DESCENT_FAILURE_MODES", False):
-            sol_csm_rdv = solve_ivp(rhs_lunar, (t_loi_end, t), csm_state_at_loi,
+            sol_csm_rdv = _coast_ivp(rhs_lunar, (t_loi_end, t), csm_state_at_loi,
                                      method='RK45', rtol=1e-9, atol=1e-2,
                                      max_step=120.0)
             csm_state_rdv = sol_csm_rdv.y[:, -1]
@@ -8860,7 +10036,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         # We use the CSM's natural orbit at the post-ascent time as the docked
         # vehicle's state, then transfer to CSM-only mass for TEI.
         t_rendezvous = t   # post-ascent time
-        sol_csm = solve_ivp(rhs_lunar, (t_loi_end, t_rendezvous), csm_state_at_loi,
+        sol_csm = _coast_ivp(rhs_lunar, (t_loi_end, t_rendezvous), csm_state_at_loi,
                              method='RK45', rtol=1e-9, atol=1e-2, max_step=120.0)
         state = sol_csm.y[:, -1].copy()
     # CSM consumables depletion — the ACTUAL root
@@ -8891,7 +10067,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         # slips honestly.
         _rdv_coast = max(0.0, TEI_PLAN_GET_S - 1.3 * 3600.0 - t)
     if _rdv_coast > 0:
-        sol_prep = solve_ivp(rhs_lunar, (t, t + _rdv_coast), state,
+        sol_prep = _coast_ivp(rhs_lunar, (t, t + _rdv_coast), state,
                              method='RK45', rtol=1e-9, atol=1e-2, max_step=120.0)
         state = sol_prep.y[:, -1].copy()
         t = float(sol_prep.t[-1])
@@ -8948,7 +10124,7 @@ def run_mission(perturb=None, capture_trajectories=False):
     def rhs_lun_tei(ti, y):
         return np.concatenate([y[3:6], gravity_earth_moon(y[:3], ti), [0]])
 
-    sol_scan = solve_ivp(rhs_lun_tei, (t, t + 10*3600), state,
+    sol_scan = _coast_ivp(rhs_lun_tei, (t, t + 10*3600), state,
                           method='RK45', rtol=1e-9, atol=1e-2, max_step=30.0,
                           dense_output=True)
     scan_t = np.arange(t, t + 10*3600, 30.0)
@@ -9156,6 +10332,46 @@ def run_mission(perturb=None, capture_trajectories=False):
 
     isp_sps_local = isp_sps    # for reuse below
     _tei_dbg = []              # per-candidate sweep diagnostics
+
+    # DELIVERED TEI (sim plan S3, block-data practice): ignite at the delivered
+    # epoch on THIS trial's orbit, in the delivered frozen inertial direction,
+    # with the delivered dv; the 3-DOF EI refinement below is the in-flight
+    # corrector, seeded from that burn. When the delivered epoch is outside this
+    # trial's scan window, or the burn reaches no entry from this orbit, the
+    # candidate scan runs as before (rev-slip).
+    _dlv_tei = _delivered_burn("tei")
+    _tei_delivered = False
+    if (_dlv_tei is not None
+            and t <= _dlv_tei["t_ign"] <= float(sol_scan.t[-1])):
+        _st_dlv = np.asarray(sol_scan.sol(_dlv_tei["t_ign"]), float).copy()
+        _st_dlv[6] = state[6]
+        _s_dlv = _fly_fixed_tei(_st_dlv, _dlv_tei["t_ign"], _dlv_tei["dir_eci"],
+                                _dlv_tei["dv_mps"], isp_sps, T_sps)
+        if _s_dlv is not None:
+            _tei_delivered = True
+            align_peaks = []
+            best_t_tei = float(_dlv_tei["t_ign"])
+            best_state_tei = _st_dlv
+            best_burn_dir = (_dlv_tei["dir_eci"]
+                             / np.linalg.norm(_dlv_tei["dir_eci"]))
+            best_overall_sim = _s_dlv
+            best_overall_score = abs(_s_dlv["entry_fpa_deg"] - target_fpa)
+            results["tei_ignition_source"] = "delivered"
+            results["tei_delivered_open_loop"] = {
+                "dv_mps": float(_dlv_tei["dv_mps"]),
+                "burn_time_s": float(_s_dlv["burn_time_s"]),
+                "entry_t_s": float(_s_dlv["entry_t"]),
+                "entry_fpa_deg": float(_s_dlv["entry_fpa_deg"]),
+                "entry_speed_ms": float(_s_dlv["entry_speed_ms"])}
+            _refly_record("tei_ignition", best_t_tei, best_state_tei)
+            _refly_record("tei_cutoff_open_loop", _s_dlv["t_post_burn"],
+                          _s_dlv["post_burn_state"])
+            _refly_record("ei_open_loop", _s_dlv["entry_t"],
+                          _s_dlv["entry_state"])
+        else:
+            results["tei_ignition_source"] = "scan_fallback_no_entry"
+    elif _dlv_tei is not None:
+        results["tei_ignition_source"] = "scan_fallback_epoch_outside_window"
 
     for peak_i in align_peaks:
         t_tei_candidate = scan_t[peak_i]
@@ -9507,7 +10723,9 @@ def run_mission(perturb=None, capture_trajectories=False):
                      "dv_mag": dv_mag}
         return None
 
-    results["tei_alignment_cos"] = float(alignments[align_peaks[0]])
+    results["tei_alignment_cos"] = (
+        float(alignments[align_peaks[0]]) if align_peaks
+        else float(np.interp(best_t_tei, scan_t, alignments)))
 
     # Apply small TEI execution perturbations
     tei_dv_bias = float(perturb.get("tei_dv_bias_ms", 0.0))
@@ -9944,7 +11162,7 @@ def run_mission(perturb=None, capture_trajectories=False):
                 _rng_tei = np.random.default_rng(
                     int(abs(hash((float(t_tei), float(best_state_tei[0]),
                                   1299709.0))) % 2**31))
-                _tei_scatter = _rng_tei.normal(0.0, MSFN_TEI_EXEC_SIGMA_MS, 3)
+                _tei_scatter = _rng_tei.normal(0.0, MSFN_TEI_EXEC_SIGMA_MS * DISPERSION_SCALE, 3)
                 dv_solved = dv_solved + _tei_scatter
             s1 = simulate_burn_vec(dv_solved)
             if globals().get("_MSFN_TEI_DEBUG"):
@@ -10058,6 +11276,8 @@ def run_mission(perturb=None, capture_trajectories=False):
     results["tei_burn_time_s"]  = best_sim["burn_time_s"]
     results["tei_ignition_t_s"] = t_tei
     _mark("tei", t_tei)
+    _refly_record("tei_cutoff", best_sim["t_post_burn"],
+                  best_sim["post_burn_state"])
     results["fpa_at_entry_deg"] = best_sim["entry_fpa_deg"]
     results["entry_speed_ms"]   = best_sim["entry_speed_ms"]
     results["reached_entry"]    = True
@@ -10160,6 +11380,7 @@ def run_mission(perturb=None, capture_trajectories=False):
     _hook = globals().get("_ENTRY_CAPTURE_HOOK", None)
     if _hook is not None:
         _hook.append((state.copy(), float(t), dict(perturb)))
+    _refly_record("ei", t, state)
     # SM systems check: event during the trans-Earth coast — POST-LM-jettison,
     # no lifeboat; the CM's entry batteries last hours, not days.
     if _sm_check(t, "sm_failure_transearth"):
@@ -10196,7 +11417,7 @@ def run_mission(perturb=None, capture_trajectories=False):
         _az_ei = np.arctan2(np.dot(_vh_ei, _east_ei),
                             np.dot(_vh_ei, _north_ei))
         _la0 = np.deg2rad(_la_ei); _lo0 = np.deg2rad(_lo_ei)
-        _dlt = 2784.0 / 6371.0
+        _dlt = RECOVERY_ZONE_RANGE_KM / 6371.0
         _lat_t = np.arcsin(np.sin(_la0) * np.cos(_dlt)
                            + np.cos(_la0) * np.sin(_dlt) * np.cos(_az_ei))
         _lon_t = _lo0 + np.arctan2(
@@ -10204,6 +11425,20 @@ def run_mission(perturb=None, capture_trajectories=False):
             np.cos(_dlt) - np.sin(_la0) * np.sin(_lat_t))
         _tg_lat = float(np.rad2deg(_lat_t))
         _tg_lon = float((np.rad2deg(_lon_t) + 180.0) % 360.0 - 180.0)
+        # WATER RE-AIM (see ENABLE_WATER_ZONE_REAIM): a zone on or near land slides
+        # along this same ground track to the nearest water the guidance can fly.
+        if (globals().get("ENABLE_WATER_ZONE_REAIM", False)
+                and _zone_near_land(_tg_lat, _tg_lon, WATER_ZONE_MARGIN_KM)):
+            _wz = _water_zone_reaim(state, t, _la0, _lo0, _az_ei)
+            results["recovery_zone_reaim"] = _wz["status"]
+            results["recovery_zone_reaim_n_pred"] = _wz["n_pred"]
+            results["recovery_zone_reaim_g_design"] = _wz["g_design"]
+            if "d_km" in _wz:
+                results["recovery_zone_reaim_km"] = float(_wz["d_km"] - RECOVERY_ZONE_RANGE_KM)
+                results["recovery_zone_reaim_pred_miss_km"] = _wz["pred_miss_km"]
+                results["recovery_zone_reaim_pred_g"] = _wz["pred_g"]
+            if _wz["status"] == "water":
+                _tg_lat, _tg_lon = _wz["lat"], _wz["lon"]
         results["recovery_zone_lat"] = _tg_lat
         results["recovery_zone_lon"] = _tg_lon
         _hav = (np.sin(np.deg2rad(_tg_lat - SPLASH_TARGET_LAT_DEG) / 2) ** 2
@@ -10355,6 +11590,10 @@ def sample_perturbation(rng):
         "cd_factor":             rng.normal(1, 0.02),
         "ld_factor":             rng.normal(1, 0.04),
     }
+    # APOLLO_DISPERSION_SCALE: the injection and TEI execution dispersions scale
+    # after the draw, so the stream above is unchanged and 1.0 is bit-identical.
+    for _k in ("insertion_v_err", "tli_pointing_rad", "tli_dv_bias_ms", "tei_dv_bias_ms"):
+        p[_k] = p[_k] * DISPERSION_SCALE
 
     # Apollo 11-specific descent failure-mode draws (only consumed when
     # ENABLE_DESCENT_FAILURE_MODES is True; harmless otherwise). Provenance is
@@ -10457,7 +11696,7 @@ def main(n=1000,
     # TEI targeting needs the nominal entry target. Start clean, then load a
     # persisted target if this is a resume of a run that already captured one
     # (so resume batches don't re-run the nominal just to recapture it).
-    globals()["_EI_TARGET"] = None
+    globals()["_EI_TARGET"] = _delivered_ei_target()   # None unbound (sim plan S5)
     # OD filter: start clean so the nominal recaptures its covariance epochs
     # (a persisted od_cov.json is loaded later, after the nominal, if present).
     globals()["_OD_COV"] = None
@@ -10744,7 +11983,7 @@ def main_parallel(n=1000,
     # --- load persisted targets (resume) ------------------------------------
     import json as _json
 
-    globals()["_EI_TARGET"] = None
+    globals()["_EI_TARGET"] = _delivered_ei_target()   # None unbound (sim plan S5)
     # OD filter: start clean so the nominal recaptures its covariance epochs
     # (a persisted od_cov.json is loaded later, after the nominal, if present).
     globals()["_OD_COV"] = None
@@ -10967,6 +12206,12 @@ def main_parallel(n=1000,
 
     df = _checkpoint(results_list)
     return df, None, None
+
+
+# DELIVERED PACKAGE AT IMPORT (see the block under the imports): bind the targets
+# into this now-complete module.
+if _DELIVERED_IMPORT_TARGETS is not None:
+    _delivered_mod.bind_delivered_targets(_DELIVERED_IMPORT_TARGETS, sys.modules[__name__])
 
 
 if __name__ == "__main__":

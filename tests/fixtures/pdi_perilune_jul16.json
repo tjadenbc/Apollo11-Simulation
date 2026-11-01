@@ -1,0 +1,15 @@
+{
+ "note": "The consumer's own nominal LM state at the descent-orbit perilune (the pre-targeting PDI point), captured 2026-10-25 by flying run_mission(perturb=None) on the bound Jul-16 free-return package up to phase_powered_descent. Frame: the consumer's ECI, m / m/s / kg. Used by tests/test_pdi_site_targeting.py.",
+ "package_sha256": "3a3a4b0e1d4ac3b910d777417ea5c5b8679b7486066d5cfb4d83e5a3b285c5e9",
+ "t_get_s": 369350.8919802904,
+ "state": [
+  -384689127.51608735,
+  -43524085.49724569,
+  -28926402.148778807,
+  1505.5109096078877,
+  -1841.2965063245645,
+  -920.4114211929984,
+  14985.62218045376
+ ],
+ "descent_m0_kg": 14985.62218045376
+}

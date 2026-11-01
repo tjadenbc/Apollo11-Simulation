@@ -1,5 +1,15 @@
 """Multi-node Monte Carlo sharding driver for a SLURM compute cluster.
 
+SIM-REPO ADAPTATION (sim plan S5, 2026-10-25; copied from the read-only original
+apollo11_project/cluster_run.py): every stage that imports apollo11 flies the
+delivered package named by APOLLO_DELIVERED_PACKAGE, which apollo11 binds at
+import, in this process and in every spawned Pool worker. setup / shard /
+preflight refuse to run unbound (ALLOW_UNBOUND=1 overrides), setup copies the
+package next to the pinned nominal (delivered_package.json), run_config.json
+records its sha256 so preflight refuses shards bound to another package, and the
+TLI-preset fingerprint check is skipped for a bound run (the package carries the
+TLI controls; the on-disk preset is never read).
+
 Three stages, chained by submit_mc.sh with sbatch dependencies:
 
   setup  — runs the nominal + captures the EI / B-plane targets into the
@@ -33,8 +43,31 @@ def _shard_dir(outdir, k):
     return os.path.join(outdir, f"shard_{k:02d}")
 
 
-def do_setup(outdir, n, seed):
+PACKAGE_COPY = "delivered_package.json"
+
+
+def _bound_apollo11(stage):
+    """Import apollo11 and require the delivered package to be bound (APOLLO_DELIVERED_PACKAGE)."""
+    if not os.environ.get("APOLLO_DELIVERED_PACKAGE") and os.environ.get("ALLOW_UNBOUND", "0") != "1":
+        raise SystemExit(f"{stage}: APOLLO_DELIVERED_PACKAGE is not set, so every trial would fly the ORIGINAL "
+                         f"unbound mission. Set it to the package path (put it in APOLLO_ENV_PREFIX for "
+                         f"submit_mc.sh), or ALLOW_UNBOUND=1 to run unbound deliberately.")
     import apollo11
+    d = getattr(apollo11, "_DELIVERED", None)
+    if d is None and os.environ.get("ALLOW_UNBOUND", "0") != "1":
+        raise SystemExit(f"{stage}: apollo11 imported without a bound package")
+    if d is not None:
+        print(f"{stage}: package {d['label']} sha256 {d['package_sha256'][:16]} "
+              f"({os.environ.get('APOLLO_DELIVERED_PACKAGE')})", flush=True)
+    return apollo11
+
+
+def do_setup(outdir, n, seed):
+    apollo11 = _bound_apollo11("setup")
+    os.makedirs(outdir, exist_ok=True)
+    pkg = os.environ.get("APOLLO_DELIVERED_PACKAGE")
+    if pkg and not os.path.exists(os.path.join(outdir, PACKAGE_COPY)):
+        shutil.copy2(pkg, os.path.join(outdir, PACKAGE_COPY))     # provenance next to the pinned nominal
     apollo11.main_parallel(n=n, outdir=outdir, seed=seed, workers=1,
                            indices=[])
     # od_cov.json = the pinned STM-LinCov covariance (ENABLE_OD_FILTER). It is
@@ -71,7 +104,7 @@ def do_shard(outdir, n, seed, shard_id, n_shards, workers):
     if not os.path.exists(os.path.join(sd, "nominal_results.json")):
         raise SystemExit("shard: master nominal artifacts missing — "
                          "run setup first")
-    import apollo11
+    apollo11 = _bound_apollo11(f"shard {shard_id}")
     idx = list(range(shard_id, n, n_shards))
     print(f"shard {shard_id}/{n_shards}: {len(idx)} trials "
           f"({idx[:3]}...{idx[-1:]}) on {workers} workers")
@@ -144,7 +177,7 @@ def do_preflight(outdir):
     # a cross-arch re-derive) must not reach the shard array. enforce=True: a
     # production run never proceeds off-branch.
     import json
-    import apollo11
+    apollo11 = _bound_apollo11("preflight")
     try:
         with open(os.path.join(outdir, "nominal_results.json")) as f:
             nom = json.load(f)
@@ -192,7 +225,10 @@ def do_preflight(outdir):
     # hypersensitive arrival-phase manifold — shifting the landing site out
     # from under the pinned targets. Refuse unless the on-disk preset would
     # actually be loaded.
-    if getattr(apollo11, "ENABLE_LAUNCH_CONTINUITY", False):
+    if getattr(apollo11, "_DELIVERED", None) is not None:
+        print("PREFLIGHT_PRESET_SKIPPED: the delivered package binds the TLI controls "
+              "(_CACHED_LAUNCH_TLI) in every process; the on-disk preset is not read")
+    elif getattr(apollo11, "ENABLE_LAUNCH_CONTINUITY", False):
         ppath = apollo11._preset_path()
         want = apollo11._preset_fingerprint()
         try:
@@ -242,8 +278,10 @@ def do_preflight(outdir):
         if os.environ.get("ALLOW_CONFIG_DRIFT", "0") != "1":
             sys.exit(5)
         print("  ALLOW_CONFIG_DRIFT=1 — proceeding without a config check.")
+    d = getattr(apollo11, "_DELIVERED", None)
     print("PREFLIGHT_OK (pinned nominal present + robust branch + config match: "
-          + " ".join(req) + ")")
+          + " ".join(req) + ")"
+          + (f" package {d['label']} {d['package_sha256'][:16]}" if d else " UNBOUND"))
     sys.exit(0)
 
 
