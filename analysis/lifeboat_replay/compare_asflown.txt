@@ -1,0 +1,30 @@
+exact fleet values from 243 trial JSONs in outputs/cluster_fleet10k_jul16_s37_def9/trials
+fleet outputs/cluster_fleet10k_jul16_s37_def9 (results_with_survival.csv): 10000 trials; translunar service-module trials 243; configuration asflown
+
+[compute nodes] files 2; runs 486; errors 0; hosts ['compute23', 'compute24']; (asked, in worker) limits [(99.8, 99.8), (105.0, 105.0)]; replay time median 293 s, sum 45.6 core-h
+  missing runs: 0 []
+  of the 59 that differ: same failure label and return class 59; largest difference in return time 0.0163 h, in burn 1.09 m/s
+  controls at 105.0 h: 243; same failure label and strike time as the fleet: 243; return class, return time and burn equal to the fleet: 184; differ: 59 [287, 352, 705, 706, 727, 1115, 1117, 1360, 1428, 1676, 2298, 2309]
+
+[gpu nodes] files 2; runs 486; errors 0; hosts ['gpu03', 'gpu04']; (asked, in worker) limits [(99.8, 99.8), (105.0, 105.0)]; replay time median 344 s, sum 52.7 core-h
+  missing runs: 0 []
+  of the 59 that differ: same failure label and return class 59; largest difference in return time 0.0163 h, in burn 1.09 m/s
+  controls at 105.0 h: 243; same failure label and strike time as the fleet: 243; return class, return time and burn equal to the fleet: 184; differ: 59 [287, 352, 705, 706, 727, 1115, 1117, 1360, 1428, 1676, 2298, 2309]
+
+compute against gpu nodes: 486 runs on both; identical label, strike, return class, return time and burn: 486; differ: 0 []
+
+per-trial table: analysis/lifeboat_replay/asflown_vs_fleet.csv (243 trials)
+
+return class at 105.0 h in this configuration (rows) against 99.8 h (columns):
+alt_return   dps_abort  free_return  none
+base_return                              
+dps_abort           43            0    19
+free_return          9           94     0
+none                 0            0    78
+
+lose their return at 99.8 h: 19 | class at 105.0 h {'dps_abort': 19} | family {None: 19} | strikes 23.57-28.52 h GET | fleet crew value [0.9]
+  trials: [352, 705, 2309, 3380, 4759, 4981, 5160, 5331, 5513, 6456, 6577, 6877, 7234, 7682, 8180, 8305, 8726, 8796, 9163]
+gain a return at 99.8 h: 0 []
+change class, still return: 9 | {'free_return': 9} -> {'dps_abort': 9} | returns at 105.0 h 100.54-104.44 h | strikes 40.77-44.59 h GET
+descent-engine abort at both limits: 43 | earlier and dearer at 99.8 h: 38 (mean burn 170.8 -> 354.0 m/s, largest 597.2)
+other service-module trials: 333; with a recorded return longer than 99.8 h: 0 []

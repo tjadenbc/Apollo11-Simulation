@@ -69,7 +69,8 @@ recovery zone** (Apollo 11 missed its own by about 3 km). The solved launch azim
 solution.
 
 The definitive run lives in
-[`outputs/cluster_fleet10k_jul16_s37_def9/`](outputs/cluster_fleet10k_jul16_s37_def9/).
+[`outputs/cluster_fleet10k_jul16_s37_def9/`](outputs/cluster_fleet10k_jul16_s37_def9/). It was flown on
+release 4.0.0, whose flight code is the copy pinned in that directory (SHA-256 prefix `0eefffc6`).
 Open [`dashboard.html`](outputs/cluster_fleet10k_jul16_s37_def9/dashboard.html) in a browser
 for the full breakdown — failure-mode decomposition, per-astronaut death attribution, phase
 timing vs. Apollo 11's flown values, and known limitations.
@@ -78,7 +79,7 @@ timing vs. Apollo 11's flown values, and known limitations.
 
 | Path | What it is |
 |---|---|
-| `apollo11.py` | The simulation (~12,200 lines): physics, every mission phase, `run_mission()`, and the `main()` / `main_parallel()` Monte Carlo drivers. Feature flags are documented in the constants block near the top. |
+| `apollo11.py` | The simulation (~12,800 lines): physics, every mission phase, `run_mission()`, and the `main()` / `main_parallel()` Monte Carlo drivers. Feature flags are documented in the constants block near the top. |
 | `delivered.py` | Binds the delivered nominal package at import (named by `APOLLO_DELIVERED_PACKAGE`, checked against `APOLLO_DELIVERED_PACKAGE_SHA256`). |
 | `nominal_packages/apollo11_nominal_package.json` | The mission-design solver's sealed package for the 16 July 1969 opportunity (`APOLLO11_NOMINAL_JUL16_BUILD1`, SHA-256 prefix `3a3a4b0e`): every target and control with its provenance class. |
 | `check_artifact.py`, `check_delivered_nominal.py` | Structural and acceptance checks of a package, run before spending compute. |
@@ -93,7 +94,7 @@ timing vs. Apollo 11's flown values, and known limitations.
 | `tests/`, `pytest.ini`, `Makefile` | 76 tests of the package boundary: binding, the nominal re-fly, trial re-fly, and flag-off bit-identity of every switchable mechanism. |
 | `cluster_run.py`, `submit_mc.sh`, `submit_heating.sh`, `queue_watcher.py` | The SLURM sharding pipeline used to produce the definitive run and its heating replay on a compute cluster. |
 | `fleet_smoke.py` | Pool smoke test used by `make fleet-smoke`. |
-| `analysis/` | The midcourse-correction comparison across dispersion scales (`mcc_scale/`) and the Sun elevation at touchdown (`sun_elevation/`). |
+| `analysis/` | The midcourse-correction comparison across dispersion scales (`mcc_scale/`), the Sun elevation at touchdown (`sun_elevation/`), and the lifeboat replay (`lifeboat_replay/`): the definitive run's translunar service-module failures flown again with a 99.8-hour lifeboat limit and with the direct-abort return. |
 | `launch_tli_preset.json` | Legacy launch/TLI targeting preset, read only by runs that bind no package; a bound run takes its TLI controls from the package. |
 | `outputs/cluster_fleet10k_jul16_s37_def9/` | **The definitive run**: per-trial results CSVs, the nominal trajectory, captured targeting products, the bound package, the run configuration, the dashboard, the crew-survival report, the parameter-uncertainty tables, the entry-heating replay and boundary sweep, and figures. |
 
@@ -179,6 +180,14 @@ which is why the definitive configuration above sets them:
 together; the paper's stress test sets it to 2 and 4. A no-landing, cislunar-only profile is enabled with the
 `APOLLO_NO_LANDING=1` environment variable.
 
+Release 4.1.0 adds three further switches, read from the environment and OFF unless set:
+
+| Flag | What it turns on |
+|---|---|
+| `APOLLO_TEI_DELIVERED_RETARGET` | The trans-Earth ignition-time update: the delivered trans-Earth burn is carried forward on the tracked orbit, its ignition moved to where the trial's orbital phase matches the delivered one and its magnitude trimmed to a perigee in the entry corridor. The paper's 21 July mission, whose return leaves the Moon out of the orbit plane, needs it. |
+| `APOLLO_DIRECT_ABORT` | A second return for an early service-module failure on the outbound coast: a direct abort that turns back short of the Moon, solved on the same descent-engine budget and lifeboat limit as the return around the Moon. Used by `analysis/lifeboat_replay/`. |
+| `APOLLO_FREE_RETURN` | A circumlunar free-return profile with no lunar-orbit insertion: the stack rounds the Moon with the Lunar Module attached, and a corridor burn two hours after pericynthion stands where the trans-Earth injection stands in the landing mission. |
+
 Binding the package turns on the JPL **DE440** ephemeris, whose kernel is **not
 redistributed** here (~114 MB; NASA/JPL publishes it directly). Point `APOLLO_JPL_KERNEL`
 at your own copy, or drop one at `ephemeris/de440.bsp` beside `apollo11.py`, which is the
@@ -200,12 +209,21 @@ products (`ei_target.json`, `bplane_target.json`, `ca_target.json`, `od_cov.json
 preflight check compares each job's effective configuration with the pinned
 `run_config.json` and refuses to start on any mismatch.
 
-## Related project
+**Release 4.1.0 against 4.0.0.** With its three new switches off, release 4.1.0 reproduces
+release 4.0.0. Twelve trials of the definitive configuration (seed 37, trial indices 0, 1, 3, 60,
+85, 123, 177, 337, 352, 706, 1117 and 1428: clean flights, an S-IVB restart failure, a rendezvous
+docking failure, and service-module failures in lunar orbit and on both coasts, with a free return,
+a descent-engine return and no return among them) were flown on both releases on one machine, and
+the two agree in every one of the 117 result columns of every trial.
 
-A sibling simulation applies the same fidelity-first methodology to NASA's
-**Artemis I** mission:
-[ArtemisI-Simulation](https://github.com/tjadenbc/ArtemisI-Simulation). The
-matched 1969-vs-2026 comparison is maintained with that project.
+## Related projects
+
+Sibling simulations apply the same fidelity-first methodology to NASA's
+**Artemis I** mission,
+[ArtemisI-Simulation](https://github.com/tjadenbc/ArtemisI-Simulation), and to the crewed
+**Artemis II** lunar flyby,
+[ArtemisII-Simulation](https://github.com/tjadenbc/ArtemisII-Simulation). The
+matched 1969-vs-2026 comparison is maintained with the Artemis I project.
 
 ## Definitive-run trial data
 
@@ -231,18 +249,9 @@ data notice.
 
 ## Use of generative AI
 
-This work was produced in a sustained collaboration between the author and Claude
-(Anthropic), a large language model used across successive versions over the project's
-development, and the division of labor was consequential enough to warrant a fuller statement
-than the customary disclosure line. The conception is the author's: the question, the
-decision to answer it with a physics-integrated Monte Carlo rather than a reliability fault
-tree, and the design doctrines that define the simulation and its validation. Claude performed
-essentially all of the implementation. Design and refinement of the simulation proceeded in stages and were a genuine dialogue between the two, in which Claude's artifacts were often constrained, redirected, and sometimes rejected by the author's
-judgment and/or validation procedure. The honest summary is that the author served as principal investigator —
-conception, judgment, quality control, and accountability — while Claude served as the
-research staff: construction, diagnosis, analysis, and drafting at a speed and volume no
-individual could match. The author could not have completed this project without Claude,
-and Claude could not have completed this project without the author.
+The statement below is the Acknowledgements section of the paper, verbatim.
+
+This work was produced in a sustained collaboration between the author and Claude (Anthropic), a large language model. The conception is the author's: the question, the decision to answer it with a physics-integrated Monte Carlo rather than a reliability fault tree, and the design doctrines that define the simulation and its validation. Claude performed essentially all of the implementation. Specifically: (i) text: every section, from the abstract to the appendices, was drafted by Claude at the author's direction and then reviewed and edited by the author; (ii) figures and tables: every figure was produced from the simulation's output by code that Claude wrote, every table was compiled by Claude from the run records and the cited sources, and no image was made by an image-generation model; (iii) code: the simulator, the mission-design solver and the analysis, cluster and typesetting scripts were written by Claude under the author's direction and validation. Design and refinement of the simulation proceeded in stages and were a genuine dialogue between the two, in which Claude's artifacts were often constrained, redirected and sometimes rejected by the author's judgment and validation procedure.
 
 ## License
 

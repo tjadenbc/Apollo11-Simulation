@@ -1,0 +1,37 @@
+exact fleet values from 243 trial JSONs in outputs/cluster_fleet10k_jul16_s37_def9/trials
+fleet outputs/cluster_fleet10k_jul16_s37_def9 (results_with_survival.csv): 10000 trials; translunar service-module trials 243; configuration directabort (not the fleet's own configuration: label and strike time are the only controls)
+
+[compute nodes] files 2; runs 486; errors 0; hosts ['compute25', 'compute26']; (asked, in worker) limits [(99.8, 99.8), (105.0, 105.0)]; replay time median 357 s, sum 52.8 core-h
+  missing runs: 0 []
+  controls at 105.0 h: 243; same failure label and strike time as the fleet: 243; differ: 0 []
+
+[gpu nodes] files 2; runs 486; errors 0; hosts ['gpu05', 'gpu06']; (asked, in worker) limits [(99.8, 99.8), (105.0, 105.0)]; replay time median 413 s, sum 60.8 core-h
+  missing runs: 0 []
+  controls at 105.0 h: 243; same failure label and strike time as the fleet: 243; differ: 0 []
+
+compute against gpu nodes: 486 runs on both; identical label, strike, return class, return time and burn: 486; differ: 0 []
+
+per-trial table: analysis/lifeboat_replay/directabort_vs_fleet.csv (243 trials)
+
+return class at 105.0 h in this configuration (rows) against 99.8 h (columns):
+alt_return   dps_abort  free_return  none
+base_return                              
+dps_abort           80            0    29
+free_return          9           94     0
+none                 0            0    31
+
+fleet return class as flown (rows) against this configuration at 105.0 h (columns):
+base_return   dps_abort  free_return  none
+fleet_return                              
+dps_abort            62            0     0
+free_return           0          103     0
+none                 47            0    31
+returns this configuration adds at 105.0 h: 47; strikes 2.83-13.52 h GET; burn 407.1-602.0 m/s; family {'direct': 47}
+no return at 105.0 h: 31; strikes [0.56, 0.72, 1.57, 1.94, 2.11, 2.53, 2.6, 2.69, 14.01, 14.07, 14.08, 14.38, 14.6, 15.07, 15.48, 16.45, 17.05, 17.29, 18.45, 18.63, 18.7, 18.71, 18.81, 19.18, 19.4, 20.27, 20.43, 20.64, 21.13, 22.02, 23.05]
+
+lose their return at 99.8 h: 29 | class at 105.0 h {'dps_abort': 29} | family {'circumlunar': 19, 'direct': 10} | strikes 11.53-28.52 h GET | fleet crew value [0.0, 0.9]
+  trials: [207, 352, 616, 705, 2309, 2804, 3380, 4324, 4759, 4981, 5160, 5331, 5513, 6456, 6577, 6877, 7234, 7455, 7682, 8180, 8197, 8289, 8305, 8726, 8796, 8976, 9163, 9440, 9734]
+gain a return at 99.8 h: 0 []
+change class, still return: 9 | {'free_return': 9} -> {'dps_abort': 9} | returns at 105.0 h 100.54-104.44 h | strikes 40.77-44.59 h GET
+descent-engine abort at both limits: 80 | earlier and dearer at 99.8 h: 75 (mean burn 321.5 -> 428.3 m/s, largest 604.6)
+other service-module trials: 333; with a recorded return longer than 99.8 h: 0 []

@@ -101,13 +101,13 @@ def crew_exposed_for_failure(fail_mode):
 # engineering/expert-judgment estimate, NOT a measured frequency. The estimates
 # are anchored to the best available NASA sources:
 #  - NASA Lunar Landing Operational Risk Model (LLORM, Mattenberger et al.,
-#    NTRS 20100018589): a Monte-Carlo lunar-landing risk model. Gives expert-
-#    judgment values used directly below — nominal-abort success P(S)=0.999,
-#    emergency (time-critical) abort success P(S)=0.9, and successful-touchdown
-#    P(S)=0.999. It also establishes that landing risk is driven by OPERATIONAL
-#    factors (terrain, navigation dispersion, propellant margin, crew decision
-#    time), NOT random hardware failure — which is why propellant-margin failure
-#    dominates this model's LM phase rather than engine failures.
+#    NTRS 20100018589): a Monte-Carlo lunar-landing risk model. Its "best
+#    guess" expert-judgment values (nominal abort P(S)=0.999, emergency abort
+#    0.9, touchdown 0.999) are NOT used below: the LLORM is a precedent for the
+#    approach, not the source of these numbers. It also argues that landing
+#    risk is driven by OPERATIONAL factors (terrain, navigation dispersion,
+#    propellant margin, crew decision time), NOT random hardware failure, so
+#    propellant margin, not engine failure, dominates this model's LM phase.
 #  - 1965 NASA Apollo risk assessment: per-flight mission-success ~73%, rated
 #    per-mission crew safety ~96% (order-of-magnitude anchor for crew survival).
 #  - Apollo abort architecture documentation; LES reliability (~98%); SPS
@@ -752,6 +752,10 @@ def apply_survival_model(df, seed=42):
         if _fk not in SURVIVAL_MODEL:
             if _fk.startswith("missed_lunar_soi"):
                 _fk = "missed_lunar_soi"            # post-MCC SOI miss == free-return-class
+            elif _fk.startswith("sm_failure_freereturn"):
+                # APOLLO_FREE_RETURN (apollo11.py): an SM failure on the inbound leg of a
+                # free return with the LM still attached is the translunar lifeboat case.
+                _fk = "sm_failure_translunar"
             elif _fk.startswith("descent_"):
                 # Any other descent-phase loss (radar dropout, unrecovered AGC
                 # alarm) is a degraded-touchdown abort: the ascent stage can
