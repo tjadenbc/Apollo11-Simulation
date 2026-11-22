@@ -365,6 +365,29 @@ FAILURE_EXPLANATIONS = {
         "fuel tank, the few seconds of degraded guidance are enough to lose "
         "the landing. (Modeled as a loss only when a radar dropout coincides "
         "with a near-empty terminal phase — fuel margin under ~5 s.)"),
+    # --- APOLLO_DESCENT_NAV (LGC descent on the navigated state) ---
+    "descent_abort_bingo": (
+        "Descent abort at bingo (land-or-abort call)",
+        "The crew was still more than 100 ft up when the land-or-abort point came "
+        "(20 s of propellant before depletion, called from the slosh-biased "
+        "low-level light), so by mission rule they aborted: the ascent stage "
+        "staged off and returned to orbit for rendezvous. Survivable."),
+    "descent_abort_no_landing_radar": (
+        "Descent abort: no landing-radar data by 10,000 ft",
+        "Flight Mission Rule: without landing-radar altitude updates the descent "
+        "cannot safely continue, so the crew aborts at a computer-estimated "
+        "10,000 ft (Apollo 14 nearly did). Survivable abort to orbit."),
+    "descent_abort_no_throttle_recovery": (
+        "Descent abort: no throttle recovery",
+        "Flight Mission Rule: if the engine has not throttled down by 15 s after "
+        "the switch to the approach phase, the guidance is diverging (low "
+        "thrust) and the crew aborts. Survivable abort to orbit."),
+    "descent_waived_off": (
+        "Landing waived off before PDI",
+        "The pre-PDI check failed twice (Earth not in view, or the predicted "
+        "landing more than the waive-off radius from the site), so the landing "
+        "was waived off and the LM rendezvoused with the CSM without landing "
+        "(the No-PDI+12 rule). Mission failure, crew returns."),
     "crew_return_leg_loss": (
         "Lost on the Earth-return leg (post-abort)",
         "Astronaut(s) who SURVIVED the precipitating failure but died on the "

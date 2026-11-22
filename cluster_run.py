@@ -46,6 +46,62 @@ def _shard_dir(outdir, k):
 PACKAGE_COPY = "delivered_package.json"
 
 
+ENV_FILE = "environment.json"
+
+
+def _record_environment(path, stage):
+    """Write the run environment + numerical fingerprint (env_fingerprint.py) to path.
+    Never fails the stage: a missing module or an error is reported and skipped."""
+    try:
+        import env_fingerprint
+        rec = env_fingerprint.write(path)
+        num = rec.get("numeric", {})
+        print(f"{stage}: environment recorded in {os.path.basename(path)} "
+              f"(numeric fingerprint {num.get('all') if isinstance(num, dict) else num}, "
+              f"{rec.get('collect_s')} s)", flush=True)
+    except Exception as e:
+        print(f"{stage}: WARNING environment not recorded: {e}", flush=True)
+
+
+def _merge_environments(outdir, n_shards):
+    """Gather shard_XX/environment.json into <outdir>/environments.json and say how
+    many distinct numerical fingerprints the shards computed with."""
+    import json
+    shards, groups = {}, {}
+    for k in range(n_shards):
+        p = os.path.join(_shard_dir(outdir, k), ENV_FILE)
+        if not os.path.exists(p):
+            continue
+        try:
+            rec = json.load(open(p))
+        except Exception as e:
+            print(f"merge: WARNING unreadable {p}: {e}")
+            continue
+        shards[f"{k:02d}"] = rec
+        num = rec.get("numeric", {})
+        fp = num.get("all") if isinstance(num, dict) else str(num)
+        groups.setdefault(fp, []).append(f"{k:02d}:{rec.get('system', {}).get('hostname', '?')}")
+    if not shards:
+        print("merge: no shard environment records (run predates env_fingerprint.py)")
+        return
+    setup = None
+    sp = os.path.join(outdir, "environment_setup.json")
+    if os.path.exists(sp):
+        try:
+            setup = json.load(open(sp))
+        except Exception:
+            setup = None
+    sfp = (setup or {}).get("numeric", {}).get("all") if isinstance((setup or {}).get("numeric"), dict) else None
+    with open(os.path.join(outdir, "environments.json"), "w") as fh:
+        json.dump({"setup": setup, "shards": shards,
+                   "numeric_fingerprints": groups, "setup_fingerprint": sfp}, fh, indent=1, sort_keys=True)
+    print(f"merge: {len(shards)} shard environment records, {len(groups)} distinct numerical "
+          f"fingerprint(s): " + "; ".join(f"{fp} on {len(v)} shard(s)" for fp, v in groups.items())
+          + (f"; setup {sfp}" if sfp else ""))
+    if len(groups) > 1:
+        print("merge: NOTE shards computed with different numerical fingerprints -- see environments.json")
+
+
 def _bound_apollo11(stage):
     """Import apollo11 and require the delivered package to be bound (APOLLO_DELIVERED_PACKAGE)."""
     if not os.environ.get("APOLLO_DELIVERED_PACKAGE") and os.environ.get("ALLOW_UNBOUND", "0") != "1":
@@ -65,6 +121,7 @@ def _bound_apollo11(stage):
 def do_setup(outdir, n, seed):
     apollo11 = _bound_apollo11("setup")
     os.makedirs(outdir, exist_ok=True)
+    _record_environment(os.path.join(outdir, "environment_setup.json"), "setup")
     pkg = os.environ.get("APOLLO_DELIVERED_PACKAGE")
     if pkg and not os.path.exists(os.path.join(outdir, PACKAGE_COPY)):
         shutil.copy2(pkg, os.path.join(outdir, PACKAGE_COPY))     # provenance next to the pinned nominal
@@ -105,6 +162,7 @@ def do_shard(outdir, n, seed, shard_id, n_shards, workers):
         raise SystemExit("shard: master nominal artifacts missing — "
                          "run setup first")
     apollo11 = _bound_apollo11(f"shard {shard_id}")
+    _record_environment(os.path.join(sd, ENV_FILE), f"shard {shard_id}")
     idx = list(range(shard_id, n, n_shards))
     print(f"shard {shard_id}/{n_shards}: {len(idx)} trials "
           f"({idx[:3]}...{idx[-1:]}) on {workers} workers")
@@ -114,6 +172,13 @@ def do_shard(outdir, n, seed, shard_id, n_shards, workers):
 
 
 def do_merge(outdir, n_shards):
+    # TEXT-PRESERVING merge. Every cell is read and written as the
+    # exact string the shard wrote. The earlier merge parsed the shard CSVs as
+    # floats with pandas' default ("high") converter, which is not correctly
+    # rounded, and wrote them back, so many cells of every merged results.csv
+    # differed from the shard's value by about 1 ULP. Now a merged row is the
+    # shard's row byte for byte (columns aligned to the union, a column a shard
+    # lacks left empty), so merging changes no value.
     import pandas as pd
     frames = []
     missing = []
@@ -124,7 +189,7 @@ def do_merge(outdir, n_shards):
         if not os.path.exists(csv):
             missing.append(k)
             continue
-        frames.append(pd.read_csv(csv))
+        frames.append(pd.read_csv(csv, dtype=str, keep_default_na=False))
         tdir = os.path.join(sd, "trials")
         if os.path.isdir(tdir):
             for fn in os.listdir(tdir):
@@ -136,14 +201,18 @@ def do_merge(outdir, n_shards):
                     shutil.copy2(src, dst)
     if missing:
         print(f"WARNING: missing shard results: {missing}")
-    df = pd.concat(frames, ignore_index=True)
-    df = df.drop_duplicates(subset="trial", keep="first")
-    df = df.sort_values("trial").reset_index(drop=True)
+    df = pd.concat(frames, ignore_index=True).fillna("")
+    # Sort and de-duplicate on the NUMERIC trial index (the cells are strings,
+    # and a shard may write a trial as "12" or "12.0").
+    key = pd.to_numeric(df["trial"]).astype(int)
+    df = df.assign(_k=key).drop_duplicates(subset="_k", keep="first")
+    df = df.sort_values("_k", kind="stable").drop(columns="_k").reset_index(drop=True)
     df.to_csv(os.path.join(outdir, "results.csv"), index=False)
     ok = df.get("full_success")
     n = len(df)
-    print(f"merge complete: {n} trials, full_success "
-          f"{int(ok.fillna(False).astype(bool).sum())}/{n}")
+    n_ok = int((ok == "True").sum()) if ok is not None else 0
+    print(f"merge complete: {n} trials, full_success {n_ok}/{n}")
+    _merge_environments(outdir, n_shards)
 
 
 def _required_skip_files():

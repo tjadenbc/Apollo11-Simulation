@@ -348,6 +348,92 @@ JPL_KERNEL_PATH = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "ephemeris", "de440.bsp"))
 _JPL = "unset"
 
+# SPEED-UPS (both default OFF, and with them off this module never imports
+# fast_kernels, so every result reproduces bit for bit).
+#   APOLLO_EPHEM_CACHE=1: the DE440 Chebyshev records the flight spans are copied once
+#     into a compiled routine (fast_kernels.c) that evaluates them with jplephem's own
+#     arithmetic, operation for operation, and the precession matrix of the epoch just
+#     asked for is kept and reused when the next call asks for the same epoch (exact key).
+#     jplephem cost ~45 us per segment call, 5 calls per gravity evaluation.
+#   APOLLO_COMPILED_LUNAR_FIELD=1: the degree-N Cunningham recursion of
+#     _lunar_sh_accel_body runs in the same compiled library, again in the Python
+#     code's own order of operations.
+# Both repeat the Python arithmetic exactly (built with -ffp-contract=off, no fast-math),
+# so with them on every result is still bit-identical; tests/test_fast_kernels.py checks
+# it call by call. An epoch outside the cached slice falls back to jplephem itself.
+# Build the library once per machine type: `python fast_kernels.py build`.
+# Named FAST_*, not ENABLE_*, on purpose: run_config() records every ENABLE_* flag and
+# the cluster preflight refuses a run whose flags differ from its pin. These two change
+# no result, so a run may use them against a nominal pinned without them.
+FAST_EPHEM_CACHE = (os.environ.get("APOLLO_EPHEM_CACHE", "0") == "1")
+FAST_LUNAR_FIELD = (os.environ.get("APOLLO_COMPILED_LUNAR_FIELD", "0") == "1")
+EPHEM_CACHE_SPAN_D = (-2.0, 60.0)    # cached slice, days relative to JD_LAUNCH
+_FK = [None]                          # the fast_kernels module once loaded
+_FK_EPH = [None]                      # JD_LAUNCH the ephemeris slice was cut for
+_FK_SH = [None]                       # key of the lunar-field terms loaded
+_FK_STATS = {"ephem_fallback": 0}
+
+# APOLLO_VECTOR_KERNELS=1 (default OFF): three more speed-ups on the paths a
+# trial spends most of its time in, again bit for bit.
+#   - _cross / _norm: the 3-vector cross product and length in plain scalar arithmetic at
+#     the hot call sites (entry aerodynamics and the entry predictor, the Moon-fixed axes,
+#     the in-plane downrange). np.cross computes exactly a1*b2 - a2*b1, a2*b0 - a0*b2,
+#     a0*b1 - a1*b0; np.linalg.norm computes sqrt(dot(v, v)), and tests/fpenv_probe.py
+#     confirms per machine that the BLAS dot of a 3-vector is the left-to-right sum
+#     x*x + y*y + z*z.
+#   - gravity_earth_moon's arithmetic, Earth zonals included, runs in fast_kernels.c in
+#     the Python code's own order. The ephemeris, the precession matrix (a BLAS 3x3
+#     product that no scalar summation order reproduces) and the lunar figure stay put.
+# Any argument that is not a float64 3-vector takes the numpy path unchanged, and with the
+# switch off _cross and _norm ARE np.cross and np.linalg.norm (_cross3 and _norm3 are the
+# fast versions, defined either way so the tests can compare them).
+FAST_VECTOR_KERNELS = (os.environ.get("APOLLO_VECTOR_KERNELS", "0") == "1")
+_FK_GV = [None]                       # key of the gravity constants loaded
+
+import math as _math
+_npf64 = np.float64
+
+
+def _norm3(v):
+    """np.linalg.norm(v) for a float64 3-vector (returned as np.float64, as numpy does)."""
+    if type(v) is np.ndarray and v.shape == (3,) and v.dtype.char == "d":
+        x, y, z = v.tolist()
+        return _npf64(_math.sqrt(x * x + y * y + z * z))
+    return np.linalg.norm(v)
+
+
+def _cross3(a, b):
+    """np.cross(a, b) for two float64 3-vectors."""
+    if (type(a) is np.ndarray and type(b) is np.ndarray and a.shape == (3,)
+            and b.shape == (3,) and a.dtype.char == "d" and b.dtype.char == "d"):
+        a0, a1, a2 = a.tolist()
+        b0, b1, b2 = b.tolist()
+        return np.array([a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0])
+    return np.cross(a, b)
+
+
+_norm = _norm3 if FAST_VECTOR_KERNELS else np.linalg.norm
+_cross = _cross3 if FAST_VECTOR_KERNELS else np.cross
+
+
+def _fk():
+    if _FK[0] is None:
+        import fast_kernels
+        fast_kernels.lib()                # fails loudly if not built for this machine
+        _FK[0] = fast_kernels
+    return _FK[0]
+
+
+def _fk_ephem():
+    """fast_kernels with the DE440 slice loaded for the current JD_LAUNCH."""
+    fk = _fk()
+    if _FK_EPH[0] != JD_LAUNCH:
+        _, moon, earth, sun, emb = _jpl()
+        fk.ephem_load([moon, earth, sun, emb],
+                      JD_LAUNCH + EPHEM_CACHE_SPAN_D[0], JD_LAUNCH + EPHEM_CACHE_SPAN_D[1])
+        _FK_EPH[0] = JD_LAUNCH
+    return fk
+
 
 def _jpl():
     """(moon_seg, earth_seg, sun_seg) from the DE kernel, or None if unavailable.
@@ -399,6 +485,15 @@ def _precess_cached(T):
     # lunar orbit, 38 m over LOI-1 -> LOI-2). Measured: the rebuild is 9.5 us
     # against 242 us for the Moon-state call it sits in (+4 %). _PRECESS_MEMO
     # stays defined (delivered.bind_delivered_targets resets it).
+    # Under APOLLO_EPHEM_CACHE the last matrix is reused only for the SAME T, compared
+    # exactly, so the result is the matrix a rebuild would give, bit for bit (the Moon
+    # and Sun of one gravity evaluation share an epoch).
+    if FAST_EPHEM_CACHE:
+        if _PRECESS_MEMO[0] is not None and _PRECESS_MEMO[0] == T:
+            return _PRECESS_MEMO[1]
+        P = _precess_j2000_to_date(T)
+        _PRECESS_MEMO[0], _PRECESS_MEMO[1] = T, P
+        return P
     return _precess_j2000_to_date(T)
 
 
@@ -414,6 +509,12 @@ def _moon_state_jpl(jde):
     seg = _jpl()
     if seg is None:
         return None
+    if FAST_EPHEM_CACHE:
+        rv = _fk_ephem().moon_rv(jde)             # (rm - re) * 1000.0, (vm - ve) * 1000.0 / 86400.0
+        if rv is not None:
+            P = _precess_cached((jde - 2451545.0) / 36525.0)
+            return P @ rv[0], P @ rv[1]
+        _FK_STATS["ephem_fallback"] += 1
     _, moon, earth, _, _ = seg
     rm, vm = moon.compute_and_differentiate(jde)
     re, ve = earth.compute_and_differentiate(jde)
@@ -444,8 +545,12 @@ def _moon_eci_m_jpl(jde):
     seg = _jpl()
     if seg is None:
         return _moon_eci_m_meeus(jde)
-    _, moon, earth, _, _ = seg
-    r_j2000 = (moon.compute(jde) - earth.compute(jde)) * 1000.0
+    r_j2000 = _fk_ephem().moon_r(jde) if FAST_EPHEM_CACHE else None
+    if r_j2000 is None:
+        if FAST_EPHEM_CACHE:
+            _FK_STATS["ephem_fallback"] += 1
+        _, moon, earth, _, _ = seg
+        r_j2000 = (moon.compute(jde) - earth.compute(jde)) * 1000.0
     return _precess_cached((jde - 2451545.0) / 36525.0) @ r_j2000
 
 
@@ -454,8 +559,12 @@ def _sun_eci_m_jpl(jde):
     seg = _jpl()
     if seg is None:
         return _sun_eci_m_meeus(jde)
-    _, _, earth, sun, emb = seg
-    r_j2000 = (sun.compute(jde) - (emb.compute(jde) + earth.compute(jde))) * 1000.0
+    r_j2000 = _fk_ephem().sun_r(jde) if FAST_EPHEM_CACHE else None
+    if r_j2000 is None:
+        if FAST_EPHEM_CACHE:
+            _FK_STATS["ephem_fallback"] += 1
+        _, _, earth, sun, emb = seg
+        r_j2000 = (sun.compute(jde) - (emb.compute(jde) + earth.compute(jde))) * 1000.0
     return _precess_cached((jde - 2451545.0) / 36525.0) @ r_j2000
 
 
@@ -614,8 +723,8 @@ def _moon_fixed_axes_ofdate(t):
     zt = np.array([np.cos(d0) * np.cos(a0),
                    np.cos(d0) * np.sin(a0), np.sin(d0)])   # pole (J2000)
     node = np.array([-np.sin(a0), np.cos(a0), 0.0])        # equator node
-    xt = node * np.cos(W) + np.cross(zt, node) * np.sin(W)  # prime meridian
-    yt = np.cross(zt, xt)
+    xt = node * np.cos(W) + _cross(zt, node) * np.sin(W)  # prime meridian
+    yt = _cross(zt, xt)
     P = _PREC_J2000_TO_DATE
     axes = (P @ xt, P @ yt, P @ zt)
     _MOON_AXES_CACHE[0] = key
@@ -1243,6 +1352,57 @@ PDI_TIG_OFFSET_MAX_S      = 300.0  # |PDI - perilune| bound (~500 km of track)
 ENABLE_DOI_SITE_RETARGET  = (os.environ.get("APOLLO_DOI_SITE_RETARGET", "1") != "0")
 PDI_TIG_OFFSET_SOFT_S     = 60.0   # retarget DOI when PDI would need more than this
 DOI_RETARGET_TOL_KM       = 5.0    # secant stop on the predicted downrange (PDI trims the rest)
+
+# ---------------------------------------------------------------------------
+# APOLLO_DESCENT_NAV (default OFF): the powered
+# descent flown by the Apollo 11 LGC guidance on the NAVIGATED state.
+#  * Guidance: Klumpp's quartic law exactly as Luminary 99 programs it (QUADGUID
+#    lead-time coefficients, AFCCALC2 horizontal limiting at full thrust, CGCALC
+#    guidance frame, TTF from the downrange-jerk cubic), with the real Apollo 11
+#    prelaunch padload targets (LM Data Book SNA-8-D-027(II) Table LM5/4.5.1-1);
+#    throttle leaves the fixed position below 5,985 lbf and returns above 6,615 lbf,
+#    26 s trim at ignition; P63 ends at TTG -62 s, P64 at -12 s (or crew takeover).
+#  * Ignition: when the guidance-frame range to the site is DNAV_RIGN_NMI. The
+#    padload's 1,432,597 ft (236 nmi) uses a frame convention not pinned down; 255
+#    nmi (Bennett TN D-6846: "approximately 260") reproduces the as-flown P64 entry
+#    (506 s; flown 507) and P66 entry (618 s; flown 617), throttle recovery 26 s
+#    early (360 s; flown 386).
+#  * Navigation: PDI state error drawn in LVLH, calibrated to the Apollo 11
+#    premission 99 % landing ellipse +-3.6 x +-1.3 nmi (TN D-6846 p. 11) and the
+#    PDI altitude uncertainty (p. 35); landing-radar altitude/velocity updates with
+#    the Luminary weighting functions (0.35(1-h/50,000 ft); 0.3(1-V/2,000 fps), 0.2
+#    below 200 fps, 0.1 in P66), terrain under the beam, lock-on 39,000 +- 5,000 ft
+#    3-sigma; horizontal position is never radar-corrected, so the landing misses by
+#    about minus the navigation error (as Apollo 11 did, 6.7 km long).
+#  * Crew P66: takeover at 330-410 ft; duration lognormal weighted to Apollo 11:
+#    centred on A11/A12/A14 (138/107/120 s), spread pooled
+#    within class over all six landings and widened for the 3-sample mean.
+#  * Mission rules (FMR 5-89/5-90, TN D-6846): abort if no landing-radar data by
+#    PGNCS altitude 10,000 ft; no throttle recovery by P64 + 15 s; bingo (land-or-
+#    abort 20 s before depletion, called from the slosh-biased low-level light):
+#    abort above 100 ft, otherwise commit. Unusable propellant 250.5 lb.
+#  * Lunar-orbit layer: DOI execution error (3-sigma 1.5 fps, MSC IN 69-FM-275);
+#    PDI go/no-go before ignition -- Earth in view at ignition and over the site, and
+#    a predictor descent flown on the estimated state must reach within
+#    DNAV_WAIVEOFF_KM of the site (10 km; an inference, not a 1969
+#    rule); on a no-go PDI slips one revolution, then the landing is waived off
+#    (No-PDI+12 rendezvous, crew returns): 'descent_waived_off'.
+#  * Clock: liftoff was timed to the CSM pass, not to touchdown, so everything after
+#    the descent (surface, ascent, rendezvous, TEI) keeps the validated schedule of
+#    the legacy chain (reference touchdown from the legacy PDI targeting + descent);
+#    the new descent changes only the descent outcome, landing point and propellant.
+#    This also keeps a pinned nominal valid.
+# OFF (default) => bit-identical to the legacy descent.
+ENABLE_DESCENT_NAV = (os.environ.get("APOLLO_DESCENT_NAV", "0") == "1")
+DNAV_RIGN_NMI       = 255.0
+DNAV_WAIVEOFF_KM    = float(os.environ.get("APOLLO_WAIVEOFF_KM", "10.0"))
+DNAV_PROB_LR_NO_ACQ = float(os.environ.get("APOLLO_LR_NO_ACQ_PROB", "0.01"))  # ESTIMATE; sensitivity at 0.005 and 0.03
+DNAV_SIG_POS_M      = (1300 * 0.3048, 2200.0, 790.0)          # radial, downrange, crossrange 1-sigma
+DNAV_SIG_VEL_MS     = (1.5 * 0.3048, 1.0 * 0.3048, 1.3 * 0.3048)
+DNAV_TERRAIN_SIG_M  = 250.0      # ESTIMATE: terrain under the LR beam (tapered over 20 km to the site)
+DNAV_P66_LN_MU      = 4.7956     # median 121 s
+DNAV_P66_LN_SIG     = 0.1943
+DNAV_DOI_SIG_MS     = 0.5 * 0.3048
 LOI2_CIRC_DV_MS      = 48.0    # impulsive LOI-2 dV for the FALLBACK path only (flown path solves its own)
 # Two-burn FLOWN LOI (ENABLE_DOI): LOI-1 ignites this fraction of its burn
 # duration before approach-perilune so the frozen-attitude burn arc is centred on
@@ -1877,6 +2037,11 @@ NOLOI_RESERVE_DV_MS = 30.0            # [estimate] held back for the later corri
 NOLOI_LIFEBOAT_MAX_H = 105.0          # [derived] Apollo 13 ran the LM 85.5 h (55:55 to 141:30 GET) on ~1,770 Ah of its
                                       #   2,181 Ah and undocked with 410 Ah left (mission report MSC-02680; SP-350
                                       #   ch. 13.3), ~20 h more at its powered-down rate; water not checked
+# Env APOLLO_LIFEBOAT_MAX_H overrides the limit. The paper's fleets fly 99.8 h, the water limit:
+# water was Apollo 13's most restrictive consumable, and Mission Control projected it to last
+# 99.8 h after the failure (Apollo 13 Flight Journal, day 6). Unset = 105.0 = bit-identical. A
+# non-default value is recorded by run_config(), so a shard missing the override is caught.
+NOLOI_LIFEBOAT_MAX_H = float(os.environ.get("APOLLO_LIFEBOAT_MAX_H", str(NOLOI_LIFEBOAT_MAX_H)))
 NOLOI_COAST_MAX_S = 10.0 * 86400.0    # [convention] search window for the Earth return
 NOLOI_EI_ALT_M = 121_920.0            # [consumer] phase_transearth_coast's entry interface
 RECOVERY_ZONE_RANGE_KM = 2784.0        # EI -> zone design range along the ground track
@@ -2497,8 +2662,28 @@ def _earth_zonal_accel(r):
     return a
 
 
+def _gravity_earth_moon_fk(r, t):
+    """gravity_earth_moon with its arithmetic in fast_kernels.c (APOLLO_VECTOR_KERNELS=1).
+    The Moon and Sun are fetched in the same order, and the lunar-figure term is added
+    here exactly as below."""
+    fk = _fk()
+    key = (MU_EARTH, R_EARTH, J2, MU_MOON, MU_SUN, EARTH_ZONAL_R_MAX_M, id(EARTH_ZONALS))
+    if _FK_GV[0] != key:
+        fk.grav_load(MU_EARTH, R_EARTH, J2, MU_MOON, MU_SUN, EARTH_ZONAL_R_MAX_M, EARTH_ZONALS)
+        _FK_GV[0] = key
+    mr, _ = moon_state(t)
+    sr = sun_state(t) if ENABLE_SOLAR_GRAVITY else None
+    a, dr_norm = fk.grav_tail(r, mr, sr, ENABLE_EARTH_HIGHER_ZONALS)
+    if dr_norm < 5.0e7:
+        dr = mr - r
+        a = a + lunar_nonspherical_accel(-dr, t)
+    return a
+
+
 def gravity_earth_moon(r, t):
     """Earth (with J2 + optional J3-J6 zonals) + Moon + Sun third-body acceleration in ECI."""
+    if FAST_VECTOR_KERNELS and type(r) is np.ndarray and r.shape == (3,) and r.dtype.char == "d":
+        return _gravity_earth_moon_fk(r, t)
     rn = np.linalg.norm(r)
     # Earth point mass
     a = -MU_EARTH * r / rn**3
@@ -2698,7 +2883,15 @@ def _lunar_sh_accel_body(x, y, z):
     via the Cunningham V/W recursion on UNNORMALIZED coefficients — Cartesian
     in/out, singularity-free at the poles. Sums n>=2 only (a perturbation on
     top of the central -MU_MOON*p/|p|^3 term). Pure-Python hot path: measured
-    ~3x faster than a numpy-fancy-indexed kernel at this size (~50 cells)."""
+    ~3x faster than a numpy-fancy-indexed kernel at this size (~50 cells).
+    Under APOLLO_COMPILED_LUNAR_FIELD the same recursion runs in fast_kernels.c."""
+    if FAST_LUNAR_FIELD:
+        key = (_LUNAR_SH_NMAX, R_MOON_GRAV, MU_MOON, id(_LUNAR_SH_TERMS), len(_LUNAR_SH_TERMS))
+        fk = _fk()
+        if _FK_SH[0] != key:
+            fk.sh_load(_LUNAR_SH_NMAX, R_MOON_GRAV, MU_MOON, _LUNAR_SH_TERMS)
+            _FK_SH[0] = key
+        return fk.sh_accel(x, y, z)
     import math as _m
     R = R_MOON_GRAV
     r2 = x * x + y * y + z * z
@@ -4209,8 +4402,8 @@ def phase_saturn_v_launch(perturb=None, t_liftoff=0.0):
     _n_target /= np.linalg.norm(_n_target)
 
     def _downrange_in_plane(r_hat):
-        d = np.cross(_n_target, r_hat)
-        n = np.linalg.norm(d)
+        d = _cross(_n_target, r_hat)
+        n = _norm(d)
         return d / n if n > 1e-9 else _head0
 
     # Sample engine-out events from perturbations
@@ -6455,6 +6648,381 @@ def phase_powered_descent(state_eci, t0, perturb=None, m0_override=None):
 
 
 # ============================================================
+# APOLLO_DESCENT_NAV: Apollo 11 LGC descent on the navigated state (see the
+# ENABLE_DESCENT_NAV block for design and sources). Units SI; _DN_FT for padload values.
+# ============================================================
+_DN_FT = 0.3048
+_DN_LBF = 4.4482216152605
+_DN_OMEGA_MOON = 2.0 * np.pi / (27.321661 * 86400.0)
+# Luminary 99 prelaunch erasable load, guidance frame x up through the site, y crossrange,
+# z downrange (LM Data Book SNA-8-D-027(II) Table LM5/4.5.1-1).
+_DN_P63 = dict(R=np.array([171.835, 0.0, -10678.596]) * _DN_FT,
+               V=np.array([-105.876, 0.0, -1.040]) * _DN_FT,
+               A=np.array([0.6241, 0.0, -9.1044]) * _DN_FT,
+               Jz=-0.01882677 * _DN_FT, TEND=-62.0, TCGI=-900.0, TCGF=-30.0)
+_DN_P64 = dict(R=np.array([111.085, 0.0, -26.794]) * _DN_FT,
+               V=np.array([-4.993, 0.0, 0.248]) * _DN_FT,
+               A=np.array([-0.2624, 0.0, -0.5120]) * _DN_FT,
+               Jz=0.0018077 * _DN_FT, TEND=-12.0, TCGI=-200.0, TCGF=-30.0)
+_DN_LEADTIME = -2.2
+_DN_F_RATED = 10500.0 * _DN_LBF
+_DN_F_DOWN = 5985.0 * _DN_LBF        # leave the fixed throttle position below this command
+_DN_F_UP = 6615.0 * _DN_LBF          # return to it above this command
+_DN_T_TRIM = 26.0
+_DN_UNUSABLE_KG = 250.5 * 0.45359237  # TN D-6846 Table II
+_DN_H_PROBE = 5.6 * _DN_FT
+_DN_TERR_LAMBDA = np.array([5.0, 12.0, 30.0, 80.0]) * 1000.0
+_DN_PASS, _DN_STEP = 2.0, 0.5         # LGC guidance cycle; RK4 step inside a pass
+
+
+def _dn_grav(r, t):
+    rn = np.linalg.norm(r)
+    return -MU_MOON * r / rn ** 3 + lunar_nonspherical_accel(r, t)
+
+
+def _dn_omega(t):
+    return _moon_fixed_axes_ofdate(t)[2] * _DN_OMEGA_MOON
+
+
+def _dn_frame(t, r, prev=None, erect=True):
+    """CGCALC: x = unit(site), y = unit(site x R), z = x cross y (GAIN term omitted: it
+    only tilts the frame out of plane). Returns (C rows x,y,z ; site position)."""
+    u = _loi_site_unit(t)
+    if erect or prev is None:
+        y = np.cross(u, r)
+        y = y / np.linalg.norm(y)
+        C = np.array([u, y, np.cross(u, y)])
+    else:
+        C = prev
+    return C, R_MOON * u
+
+
+def _dn_solve_ttf(tg, RG, VG, T0):
+    """TTF (<0) from JTGz T^3 + 6 ATGz T^2 + (18 VTGz + 6 VGz) T + 24 (RTGz - RGz) = 0."""
+    c3, c2 = tg["Jz"], 6.0 * tg["A"][2]
+    c1, c0 = 18.0 * tg["V"][2] + 6.0 * VG[2], 24.0 * (tg["R"][2] - RG[2])
+    T = T0
+    for _ in range(40):
+        f = ((c3 * T + c2) * T + c1) * T + c0
+        df = (3.0 * c3 * T + 2.0 * c2) * T + c1
+        if df == 0.0:
+            break
+        dT = f / df
+        T -= dT
+        if abs(dT) < 1e-9:
+            break
+    if not np.isfinite(T) or T >= 0.0:
+        roots = np.roots([c3, c2, c1, c0])
+        neg = [x.real for x in roots if abs(x.imag) < 1e-9 and x.real < 0.0]
+        T = max(neg) if neg else -1.0
+    return T
+
+
+def _dn_acg(tg, RG, VG, T):
+    """QUADGUID: Klumpp Eq. (11) with the 2.2-s lead time, as Luminary 99 codes it."""
+    q = (T - _DN_LEADTIME) / T
+    c26, c28 = 3.0 * q * q - 2.0 * q, 4.0 * q * q - 3.0 * q
+    cv, c30 = 2.0 * q * q - q, 6.0 * q * q - 6.0 * q + 1.0
+    return (12.0 * c26 * (tg["R"] - RG) / (T * T)
+            + 6.0 * (c28 * tg["V"] + cv * VG) / T + c30 * tg["A"])
+
+
+def _dn_limit(afc, amax):
+    """AFCCALC2: keep the vertical and out-of-plane command, cut the horizontal to fit."""
+    ax, ay, az = afc
+    h2 = amax * amax - ax * ax - ay * ay
+    hmax = np.sqrt(h2) if h2 > 0.0 else 0.0
+    return np.array([ax, ay, min(max(az, -hmax), hmax)])
+
+
+def _dn_rk4(y, t, F, u, isp, h):
+    def f(tt, yy):
+        return np.concatenate([yy[3:6], _dn_grav(yy[:3], tt) + (F / yy[6]) * u,
+                               [-F / (isp * G0)]])
+    k1 = f(t, y)
+    k2 = f(t + h / 2, y + h / 2 * k1)
+    k3 = f(t + h / 2, y + h / 2 * k2)
+    k4 = f(t + h, y + h * k3)
+    return y + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+
+
+def _dn_lvlh(r, v):
+    R = r / np.linalg.norm(r)
+    Cn = np.cross(r, v)
+    Cn = Cn / np.linalg.norm(Cn)
+    return np.array([R, np.cross(Cn, R), Cn])
+
+
+def _dn_coast(y, t, dt):
+    n = max(1, int(abs(dt) / 2.0))
+    h = dt / n
+    for _ in range(n):
+        y = _dn_rk4(y, t, 0.0, np.array([1.0, 0.0, 0.0]), DPS_ISP, h)
+        t += h
+    return y, t
+
+
+def _dn_ignition(y, t, e_r=None, e_v=None):
+    """Ignition-algorithm stand-in: coast the Moon-centred LM state (y = [r, v, m]) to where
+    the ESTIMATED guidance-frame downrange position equals -DNAV_RIGN_NMI (secant on
+    time). Returns (y, t, e_r, e_v) at ignition, or None if not reached within half an
+    orbit (the LM is not on a descent orbit that leads to the site)."""
+    e_r = np.zeros(3) if e_r is None else e_r
+    e_v = np.zeros(3) if e_v is None else e_v
+    rign = -DNAV_RIGN_NMI * 1852.0
+    t_start = t
+    for _ in range(10):
+        re = y[:3] + e_r
+        C, LAND = _dn_frame(t, re)
+        z = float((C @ (re - LAND))[2])
+        vg = np.linalg.norm(y[3:6]) * R_MOON / np.linalg.norm(y[:3])
+        dt = (rign - z) / vg
+        if abs(dt) < 1e-3:
+            return y, t, e_r, e_v
+        if abs(t + dt - t_start) > 3600.0:
+            return None
+        y, t = _dn_coast(y, t, dt)
+        e_r = e_r + e_v * dt
+    return y, t, e_r, e_v
+
+
+def _dn_draws(rng):
+    """One trial's navigation / landing-radar / crew draws (phase-local stream; fixed order).
+    APOLLO_DISPERSION_SCALE multiplies the navigation (e_r, e_v) and DOI execution (doi_dv)
+    errors after the draws, so the stream is unchanged and 1.0 is
+    bit-identical; terrain, radar and crew draws are not dispersions and stay unscaled."""
+    d = dict(
+        e_r=np.array([rng.normal(0.0, s) for s in DNAV_SIG_POS_M]),
+        e_v=np.array([rng.normal(0.0, s) for s in DNAV_SIG_VEL_MS]),
+        terr_amp=rng.normal(0.0, 1.0, 4), terr_phase=rng.uniform(0.0, 2 * np.pi, 4),
+        h_lock=rng.normal(39000 * _DN_FT, 5000 * _DN_FT / 3.0),
+        lr_delay=rng.uniform(10.0, 55.0),
+        h_takeover=rng.uniform(330 * _DN_FT, 410 * _DN_FT),
+        p66_s=float(np.exp(rng.normal(DNAV_P66_LN_MU, DNAV_P66_LN_SIG))),
+        lr_fail=bool(rng.random() < DNAV_PROB_LR_NO_ACQ),
+        doi_dv=np.array([rng.normal(0.0, DNAV_DOI_SIG_MS) for _ in range(3)]))
+    for _k in ("e_r", "e_v", "doi_dv"):
+        d[_k] = d[_k] * DISPERSION_SCALE
+    return d
+
+
+def _dn_nominal_draws():
+    """The nominal: no navigation error, no radar failure, median crew times."""
+    return dict(e_r=np.zeros(3), e_v=np.zeros(3), terr_amp=np.zeros(4), terr_phase=np.zeros(4),
+                h_lock=39000 * _DN_FT, lr_delay=30.0, h_takeover=370 * _DN_FT,
+                p66_s=float(np.exp(DNAV_P66_LN_MU)), lr_fail=False, doi_dv=np.zeros(3))
+
+
+def _dn_terrain(nav, s_m):
+    w = nav["terr_amp"] / 2.0
+    h = DNAV_TERRAIN_SIG_M * float(np.sum(w * np.sin(2 * np.pi * s_m / _DN_TERR_LAMBDA
+                                                     + nav["terr_phase"])))
+    return h * (1.0 - np.exp(-abs(s_m) / 20000.0))
+
+
+def phase_powered_descent_lgc(y0, t0, perturb, nav, rng=None, slosh_bias_s=0.0,
+                              predictor=False):
+    """APOLLO_DESCENT_NAV powered descent from the Moon-centred ignition state y0 = [r, v, m]
+    at t0, with the navigation error nav['e_r'], nav['e_v'] (inertial, at t0). Returns a
+    dict compatible with phase_powered_descent plus dnav_* diagnostics. predictor=True
+    flies the guidance with no dispersions and no radar (the pre-PDI RTCC/LGC prediction
+    on the estimated state)."""
+    perturb = perturb or {}
+    thr_f = 1.0 if predictor else perturb.get("dps_thrust_factor", 1.0)
+    isp = DPS_ISP * (1.0 if predictor else perturb.get("dps_isp_factor", 1.0))
+    y, t = np.array(y0, float), float(t0)
+    e_r, e_v = np.array(nav["e_r"], float), np.array(nav["e_v"], float)
+    n0 = _dn_lvlh(y[:3], y[3:6])[2]
+    dry = LM_DESC_DRY + LM_ASCT_TOTAL
+    phase, tg, T, ftp, C = "P63", _DN_P63, -600.0, True, None
+    ev = {}
+    lr_on_t, lr_enabled, vaxis = None, False, 0
+    t_p64 = t_to = None
+    bingo = committed = False
+    first_dh = None
+    max_acc = 0.0
+    tr_t, tr_y = [t], [y.copy()]
+
+    def out(success, reason, **kw):
+        d = dict(success=success, reason=reason, trajectory_t=np.array(tr_t),
+                 trajectory_y=np.array(tr_y).T, final_t=tr_t[-1],
+                 dnav_events={k: float(v) for k, v in ev.items()},
+                 dnav_lr_first_dh_ft=(None if first_dh is None else first_dh / _DN_FT),
+                 dnav_bingo=bingo, dnav_committed=committed,
+                 dnav_p66_s=(None if t_to is None else tr_t[-1] - t_to),
+                 max_decel_ms2=max_acc)
+        d.update(kw)
+        return d
+
+    while True:
+        tfi = t - t0
+        r, v, m = y[:3], y[3:6], y[6]
+        alt = np.linalg.norm(r) - R_MOON
+        wm = _dn_omega(t)
+        r_e, v_e = r + e_r, v + e_v
+        alt_e = np.linalg.norm(r_e) - R_MOON
+        vrel_e = v_e - np.cross(wm, r_e)
+        # ---- landing radar (Luminary weighting; terrain under the beam) ----
+        if not predictor:
+            if not nav["lr_fail"] and lr_on_t is None and alt < nav["h_lock"]:
+                lr_on_t = t
+                ev["lr_lock_tfi_s"] = tfi
+            if lr_on_t is not None and not lr_enabled and t - lr_on_t >= nav["lr_delay"]:
+                lr_enabled = True
+                ev["lr_enabled_tfi_s"] = tfi
+            if lr_enabled:
+                Cs, LANDs = _dn_frame(t, r)
+                s_true = float((Cs @ (r - LANDs))[2])
+                h_lr = (alt - _dn_terrain(nav, s_true)
+                        + (0.0 if rng is None else rng.normal(0.0, 1.0)) * (0.01 * alt + 1.5))
+                dh = h_lr - alt_e
+                if first_dh is None:
+                    first_dh = dh
+                if not (phase != "P63" and abs(dh) > 200 * _DN_FT + alt_e / 8.0):
+                    wh = max(0.0, 0.35 * (1.0 - alt_e / (50000 * _DN_FT)))
+                    e_r = e_r + wh * dh * (r_e / np.linalg.norm(r_e))
+                V = np.linalg.norm(vrel_e)
+                if V < 2000 * _DN_FT:
+                    wv = (0.1 if phase == "P66"
+                          else (0.2 if V < 200 * _DN_FT else 0.3 * (1.0 - V / (2000 * _DN_FT))))
+                    ax_ = _dn_lvlh(r_e, v_e)[vaxis % 3]
+                    vaxis += 1
+                    dvm = (float(ax_ @ ((v - np.cross(wm, r)) - vrel_e))
+                           + (0.0 if rng is None else rng.normal(0.0, 1.0)) * 0.3 * _DN_FT)
+                    e_v = e_v + wv * dvm * ax_
+                r_e, v_e = r + e_r, v + e_v
+                alt_e = np.linalg.norm(r_e) - R_MOON
+                vrel_e = v_e - np.cross(wm, r_e)
+            if not lr_enabled and alt_e <= 10000 * _DN_FT:
+                return out(False, "descent_abort_no_landing_radar", final_alt_m=alt)
+        # ---- propellant: bingo = land-or-abort 20 s before depletion ----
+        usable = m - dry - _DN_UNUSABLE_KG
+        mdot_h = m * G_MOON / (isp * G0)
+        if (not predictor and phase in ("P64", "P66") and not bingo
+                and usable / mdot_h <= 20.0 + slosh_bias_s):
+            bingo = True
+            ev["bingo_tfi_s"] = tfi
+            if alt > 100 * _DN_FT:
+                return out(False, "descent_abort_bingo", final_alt_m=alt,
+                           prop_remaining_kg=m - dry)
+            committed = True
+        if usable <= 0.0:
+            return out(False, "descent_propellant_exhausted", final_alt_m=alt,
+                       touchdown_speed_v_ms=float(np.dot(v, r) / np.linalg.norm(r)),
+                       touchdown_speed_h_ms=0.0, prop_remaining_kg=0.0, fuel_margin_s=-1.0)
+        # ---- guidance ----
+        if phase in ("P63", "P64"):
+            erect = C is None or (tg["TCGI"] <= T <= tg["TCGF"])
+            C, LANDe = _dn_frame(t, r_e, C, erect)
+            RG, VG = C @ (r_e - LANDe), C @ vrel_e
+            T = _dn_solve_ttf(tg, RG, VG, T)
+            if T > tg["TEND"]:
+                if phase == "P63":
+                    ev["p64_tfi_s"] = tfi
+                    t_p64 = t
+                    phase, tg, T, C = "P64", _DN_P64, -110.0, None
+                    continue
+                phase, t_to = "P66", t
+                ev["p66_tfi_s"] = tfi
+                continue
+            if phase == "P64" and alt <= nav["h_takeover"]:      # crew takes over by eye
+                phase, t_to = "P66", t
+                ev["p66_tfi_s"] = tfi
+                continue
+            if phase == "P64" and ftp and t - t_p64 > 15.0:
+                return out(False, "descent_abort_no_throttle_recovery", final_alt_m=alt)
+            afc = _dn_acg(tg, RG, VG, T) - C @ _dn_grav(r_e, t)
+            Fcmd = m * np.linalg.norm(afc)
+            if tfi < _DN_T_TRIM:
+                Fc = 0.10 * _DN_F_RATED
+            else:
+                if ftp and Fcmd < _DN_F_DOWN:
+                    ftp = False
+                    ev["throttle_recovery_tfi_s"] = tfi
+                elif (not ftp) and Fcmd > _DN_F_UP:
+                    ftp = True
+                Fc = DPS_THRUST_MAX if ftp else max(Fcmd, 0.10 * _DN_F_RATED)
+            afl = _dn_limit(afc, DPS_THRUST_MAX / m)
+            u = C.T @ (afl / np.linalg.norm(afl))
+            F_act = Fc * thr_f
+            dt = _DN_PASS
+        else:
+            # P66: the crew flies by eye and the radar-updated displays (true terrain-relative
+            # state), rate of descent with the 1.5-s time constant (R-695), horizontal velocity
+            # nulled with an 8-s time constant, so as to land nav['p66_s'] after takeover.
+            rh = r / np.linalg.norm(r)
+            vrel = v - np.cross(wm, r)
+            hdot = float(vrel @ rh)
+            vh = vrel - hdot * rh
+            t_left = nav["p66_s"] - (t - t_to)
+            cap = min(16.0, max(3.0, 0.04 * alt / _DN_FT)) * _DN_FT
+            if committed:
+                rod = -cap
+            else:
+                floor = (2.0 if alt < 30 * _DN_FT else 0.5) * _DN_FT
+                rod = -min(cap, max(floor, (alt - _DN_H_PROBE) / max(t_left, 4.0)))
+            a_v = np.linalg.norm(_dn_grav(r, t)) + (rod - hdot) / 1.5
+            a_h = -vh / 8.0
+            lim = np.tan(np.radians(20.0)) * max(a_v, 0.1)
+            nah = np.linalg.norm(a_h)
+            if nah > lim:
+                a_h = a_h * (lim / nah)
+            acc = a_v * rh + a_h
+            Fc = min(max(m * np.linalg.norm(acc) / thr_f, 0.10 * _DN_F_RATED),
+                     0.65 * _DN_F_RATED)
+            u = acc / np.linalg.norm(acc)
+            F_act = Fc * thr_f
+            dt = 1.0
+        max_acc = max(max_acc, F_act / m)
+        for _ in range(int(round(dt / _DN_STEP))):
+            y2 = _dn_rk4(y, t, F_act, u, isp, _DN_STEP)
+            alt2 = np.linalg.norm(y2[:3]) - R_MOON
+            if alt2 <= CONTACT_PROBE_LENGTH_M:
+                f = (alt - CONTACT_PROBE_LENGTH_M) / max(alt - alt2, 1e-9)
+                yc = y + f * (y2 - y)
+                tc = t + f * _DN_STEP
+                tr_t.append(tc)
+                tr_y.append(yc.copy())
+                rc = yc[:3]
+                rh = rc / np.linalg.norm(rc)
+                vrel = yc[3:6] - np.cross(_dn_omega(tc), rc)
+                hd = float(vrel @ rh)
+                prop_rem = float(yc[6] - dry)
+                usable = prop_rem - _DN_UNUSABLE_KG
+                mdot_h = yc[6] * G_MOON / (isp * G0)
+                u_s = _loi_site_unit(tc)
+                dr_m = R_MOON * float(np.arctan2(np.dot(np.cross(u_s, rh), n0), np.dot(u_s, rh)))
+                xr_m = R_MOON * (float(np.arcsin(np.clip(rh @ n0, -1, 1)))
+                                 - float(np.arcsin(np.clip(u_s @ n0, -1, 1))))
+                if globals().get("ENABLE_LUNAR_LIBRATION", False):
+                    _xb, _yb, _zb = _moon_fixed_axes_ofdate(tc)
+                    lat = np.rad2deg(np.arcsin(np.clip(np.dot(rh, _zb), -1, 1)))
+                    lon = np.rad2deg(np.arctan2(np.dot(rh, _yb), np.dot(rh, _xb)))
+                else:
+                    lat = np.rad2deg(np.arcsin(rh[2]))
+                    lon = np.rad2deg(np.arctan2(rh[1], rh[0]))
+                return out(True, "touchdown", touchdown_speed_v_ms=hd, land_lat_deg=lat, land_lon_deg=lon,
+                           touchdown_speed_h_ms=float(np.linalg.norm(vrel - hd * rh)),
+                           prop_remaining_kg=prop_rem, fuel_margin_s=max(0.0, usable) / mdot_h,
+                           min_alt_m=float(alt2), dnav_pred_downrange_m=dr_m,
+                           dnav_pred_crossrange_m=xr_m)
+            y, t = y2, t + _DN_STEP
+            e_r = e_r + e_v * _DN_STEP
+            alt = alt2
+        tr_t.append(t)
+        tr_y.append(y.copy())
+        if t - t0 > 1500.0:
+            return out(False, "descent_timeout", final_alt_m=alt)
+
+
+def _dn_earth_in_view(r_mc, t):
+    """True when the Earth's centre is above the local horizon of the Moon-centred point."""
+    mr, _ = moon_state(t)
+    e = -mr - r_mc
+    return float(np.dot(e / np.linalg.norm(e), r_mc / np.linalg.norm(r_mc))) > 0.0
+
+
+# ============================================================
 # Phase: LM ascent — APS burn from surface to lunar orbit
 # ============================================================
 def phase_ascent_burn(t0, perturb=None, csm_plane_normal=None):
@@ -7407,11 +7975,11 @@ def phase_entry(state, t0, perturb=None,
 
     def aero_forces(r, v_eci, m):
         """Return (drag accel, lift_dir, q, v_rel) for current state."""
-        rn = np.linalg.norm(r)
+        rn = _norm(r)
         alt = rn - R_EARTH
-        v_air = np.cross(omega_e_vec, r)
+        v_air = _cross(omega_e_vec, r)
         v_rel = v_eci - v_air
-        v_rel_mag = np.linalg.norm(v_rel)
+        v_rel_mag = _norm(v_rel)
         rho = _entry_density(alt)
         q = 0.5 * rho * v_rel_mag**2
         if v_rel_mag < 1 or rho < 1e-10:
@@ -7423,8 +7991,8 @@ def phase_entry(state, t0, perturb=None,
         v_rel_hat = v_rel / v_rel_mag
         # "Up" component perpendicular to v_rel
         lift_up = r_hat - np.dot(r_hat, v_rel_hat) * v_rel_hat
-        if np.linalg.norm(lift_up) > 1e-3:
-            lift_up /= np.linalg.norm(lift_up)
+        if _norm(lift_up) > 1e-3:
+            lift_up /= _norm(lift_up)
         else:
             lift_up = np.zeros(3)
         return a_drag, lift_up, q, v_rel
@@ -7436,17 +8004,17 @@ def phase_entry(state, t0, perturb=None,
         Bank sign controls left/right component of horizontal lift.
         """
         a_drag, lift_up, q, v_rel = aero_forces(r, v_eci, m)
-        v_rel_mag = np.linalg.norm(v_rel)
+        v_rel_mag = _norm(v_rel)
         if v_rel_mag < 1 or q < 1e-3:
             return a_drag
         # Build out-of-plane direction (perpendicular to lift_up and v_rel)
         v_rel_hat = v_rel / v_rel_mag
-        side = np.cross(lift_up, v_rel_hat)
-        side_norm = np.linalg.norm(side)
+        side = _cross(lift_up, v_rel_hat)
+        side_norm = _norm(side)
         if side_norm > 1e-6:
             side /= side_norm
         # Lift magnitude is L = D * L/D
-        L_mag = -np.linalg.norm(a_drag) * ld
+        L_mag = -_norm(a_drag) * ld
         # Resolve into vertical (cos(bank)) + horizontal (sin(bank))
         bank_rad = np.deg2rad(bank_deg)
         lift_vec = (L_mag * np.cos(bank_rad) * lift_up
@@ -7478,7 +8046,7 @@ def phase_entry(state, t0, perturb=None,
         peak_g_pred = [0.0]
         def rhs_pred(t, y):
             r = y[:3]; v = y[3:6]
-            rn = np.linalg.norm(r)
+            rn = _norm(r)
             if rn < R_EARTH:
                 return np.concatenate([v, gravity_earth_moon(r, t), [0]])
             a_g = gravity_earth_moon(r, t)
@@ -7486,15 +8054,15 @@ def phase_entry(state, t0, perturb=None,
             if bank_profile is not None:
                 # Bank-vs-velocity reference profile (offline-optimized);
                 # overrides the constant bank while supercircular.
-                vrel_p = np.linalg.norm(v - np.cross(omega_e_vec, r))
+                vrel_p = _norm(v - _cross(omega_e_vec, r))
                 if vrel_p > vswitch:
                     bk = float(np.interp(vrel_p, bank_profile[0],
                                          bank_profile[1]))
                 elif bank2_deg is not None:
                     bk = bank2_deg
             elif bank2_deg is not None:
-                v_rel_p = v - np.cross(omega_e_vec, r)
-                vrel_n = np.linalg.norm(v_rel_p)
+                v_rel_p = v - _cross(omega_e_vec, r)
+                vrel_n = _norm(v_rel_p)
                 if vrel_n <= vswitch:
                     bk = bank2_deg
                 elif drag_ref is not None:
@@ -7506,12 +8074,12 @@ def phase_entry(state, t0, perturb=None,
                         bk = float(np.clip(55.0 - (dg - drag_ref) * 25.0,
                                            0.0, 120.0))
             a_a = lift_accel(r, v, m0, bk, bank_sign_val)
-            _gl = np.linalg.norm(a_a) / G0
+            _gl = _norm(a_a) / G0
             if _gl > peak_g_pred[0]:
                 peak_g_pred[0] = _gl
             return np.concatenate([v, a_g + a_a, [0]])
         def land_evt(t, y):
-            return np.linalg.norm(y[:3]) - R_EARTH - 7_300.0
+            return _norm(y[:3]) - R_EARTH - 7_300.0
         land_evt.terminal = True; land_evt.direction = -1
         # Terminal phase uses a finer prediction (the remaining arc is short, so
         # this stays cheap); coarse otherwise.
@@ -8186,7 +8754,7 @@ def _surface_ops(t, perturb, results, mark):
     # randomized and would break serial/parallel/resume determinism). Distinct
     # salt constant from rng_nav/rng_exec/rng_tei so no stream shifts another.
     rng_s = np.random.default_rng(
-        int(abs(hash((float(t), float(results.get("land_lon_deg", 0.0)),
+        int(abs(hash((float(t), float(results.get("dnav_seed_land_lon_deg", results.get("land_lon_deg", 0.0))),
                       60013.0))) % 2**31))
 
     # --- EVA event timeline marks (sourced GET deltas from touchdown) ---
@@ -8250,7 +8818,7 @@ def _surface_ops(t, perturb, results, mark):
         _p_spe_surf = (SPE_SEVERE_PROB_PER_MISSION
                        * (SURFACE_STAY_S / SM_MISSION_REF_DURATION_S))
         _rng_spe = np.random.default_rng(
-            int(abs(hash((float(t), float(results.get("land_lon_deg", 0.0)),
+            int(abs(hash((float(t), float(results.get("dnav_seed_land_lon_deg", results.get("land_lon_deg", 0.0))),
                           float(_SALT_SPE_SURFACE)))) % 2**31))
         if _rng_spe.random() < _p_spe_surf:
             results["full_success"] = False
@@ -8679,6 +9247,12 @@ def run_config():
     cfg["DELIVERED_PACKAGE_SHA256"] = _d.get("package_sha256")
     cfg["DELIVERED_LABEL"] = _d.get("label")
     cfg["LUNAR_DOI_GET_S"] = globals().get("LUNAR_DOI_GET_S")
+    # Env-driven scalars: recorded only when they differ from the default, so a config
+    # record written without them still matches a default run.
+    for _k, _dflt in (("NOLOI_LIFEBOAT_MAX_H", 105.0), ("DNAV_WAIVEOFF_KM", 10.0),
+                      ("DNAV_PROB_LR_NO_ACQ", 0.01)):
+        if _k in globals() and globals()[_k] != _dflt:
+            cfg[_k] = globals()[_k]
     return cfg
 
 
@@ -10279,6 +10853,8 @@ def run_mission(perturb=None, capture_trajectories=False):
                         mv_p + v_hat * v_apo_doi,
                         [descent_m0]])
 
+                if ENABLE_DESCENT_NAV:
+                    _dn_doi_y, _dn_doi_t = np.array(lm_state, float).copy(), float(t)
                 # Coast the LM down to the ~15 km perilune for PDI.
                 sol_lo = _coast_ivp(rhs_lunar, (t, t + 3*3600), lm_state,
                                    method='RK45', rtol=1e-9, atol=1e-2,
@@ -10307,6 +10883,9 @@ def run_mission(perturb=None, capture_trajectories=False):
             _mr_pdi, _mv_pdi = moon_state(t)
             _n_pdi = np.cross(state[:3] - _mr_pdi, state[3:6] - _mv_pdi)
             _n_pdi = _n_pdi / np.linalg.norm(_n_pdi)
+            _dnav_on = (ENABLE_DESCENT_NAV and globals().get("ENABLE_DOI", False) and _doi_done)
+            if _dnav_on:
+                _dn_peri_y, _dn_peri_t = np.array(state, float).copy(), float(t)
             if (globals().get("ENABLE_PDI_SITE_TARGETING", False)
                     and globals().get("ENABLE_DOI", False) and _doi_done):
                 _tig = _target_pdi_tig(state, t, descent_m0)
@@ -10325,6 +10904,110 @@ def run_mission(perturb=None, capture_trajectories=False):
 
             _mark("pdi", t)
             desc = phase_powered_descent(state, t, perturb, m0_override=descent_m0)
+            if _dnav_on:
+                # APOLLO_DESCENT_NAV. The legacy descent above now only sets the SCHEDULE
+                # (reference touchdown -> surface stay -> liftoff timed to the CSM pass), so
+                # everything after the descent keeps the validated timeline; the LGC descent
+                # below decides the outcome, landing point and propellant.
+                _t_sched = float(desc.get("final_t", t))
+                if not perturb:
+                    _nav, _rng_dn, _slosh = _dn_nominal_draws(), None, 0.0
+                else:
+                    # Phase-local stream (numeric salt only; distinct from the other salts).
+                    _rng_dn = np.random.default_rng(
+                        int(abs(hash((float(_dn_doi_t), float(_dn_doi_y[1]), 70001.0))) % 2**31))
+                    _nav = _dn_draws(_rng_dn)
+                    _slosh = float(perturb.get("slosh_sensor_bias_s", SLOSH_SENSOR_BIAS_MEAN_S))
+                # B2: DOI execution error on the LM's post-DOI state, then the coast to perilune.
+                if np.any(_nav["doi_dv"]):
+                    _y_d = _dn_doi_y.copy()
+                    _mr_d, _mv_d = moon_state(_dn_doi_t)
+                    _y_d[3:6] = _y_d[3:6] + _dn_lvlh(_y_d[:3] - _mr_d, _y_d[3:6] - _mv_d).T @ _nav["doi_dv"]
+                    _sol_d = _coast_ivp(rhs_lunar, (_dn_doi_t, _dn_doi_t + 3 * 3600), _y_d,
+                                        method='RK45', rtol=1e-9, atol=1e-2, max_step=60.0,
+                                        events=perilune_event)
+                    if len(_sol_d.t_events[0]) > 0:
+                        _yp, _tp = _sol_d.y_events[0][0], float(_sol_d.t_events[0][0])
+                    else:
+                        _yp, _tp = _sol_d.y[:, -1], float(_sol_d.t[-1])
+                else:
+                    _yp, _tp = _dn_peri_y, _dn_peri_t
+                _mrp, _mvp = moon_state(_tp)
+                _ymc = np.concatenate([_yp[:3] - _mrp, _yp[3:6] - _mvp, [descent_m0]])
+                # Navigation (knowledge) error of the uplinked state, LVLH at perilune.
+                _Mp = _dn_lvlh(_ymc[:3], _ymc[3:6])
+                _er, _ev = _Mp.T @ _nav["e_r"], _Mp.T @ _nav["e_v"]
+                results["dnav_nav_err_r_m"] = float(_nav["e_r"][0])
+                results["dnav_nav_err_dr_m"] = float(_nav["e_r"][1])
+                results["dnav_nav_err_xr_m"] = float(_nav["e_r"][2])
+                results["dnav_doi_dv_err_ms"] = float(np.linalg.norm(_nav["doi_dv"]))
+                results["dnav_lr_fail"] = bool(_nav["lr_fail"])
+                results["dnav_schedule_touchdown_get_s"] = _t_sched
+                # PDI go/no-go (B2): Earth in view at ignition and over the site, and the
+                # predictor descent on the ESTIMATED state reaches within DNAV_WAIVEOFF_KM.
+                # On a no-go, PDI slips one revolution (fresh state vector); then waive off.
+                _go, _slips, _ig = False, 0, None
+                for _rev in range(2):
+                    _ig = _dn_ignition(_ymc, _tp, _er, _ev)
+                    if _ig is not None:
+                        _y0, _t0, _er0, _ev0 = _ig
+                        _go = (_dn_earth_in_view(_y0[:3], _t0)
+                               and _dn_earth_in_view(R_MOON * _loi_site_unit(_t0 + 720.0), _t0 + 720.0))
+                        if _go:
+                            _pred = phase_powered_descent_lgc(
+                                _y0 + np.concatenate([_er0, _ev0, [0.0]]), _t0, None,
+                                dict(_dn_nominal_draws()), predictor=True)
+                            _pmiss = (np.hypot(_pred["dnav_pred_downrange_m"], _pred["dnav_pred_crossrange_m"])
+                                      / 1000.0 if _pred["success"] else float("inf"))
+                            results.setdefault("dnav_pred_miss_km", float(_pmiss))
+                            _go = bool(_pred["success"]) and _pmiss <= DNAV_WAIVEOFF_KM
+                    if _go or _rev == 1:
+                        break
+                    _slips += 1
+                    _E = 0.5 * float(_ymc[3:6] @ _ymc[3:6]) - MU_MOON / np.linalg.norm(_ymc[:3])
+                    if _E >= 0.0:
+                        break
+                    _P = 2.0 * np.pi * np.sqrt((-MU_MOON / (2.0 * _E)) ** 3 / MU_MOON)
+                    _ymc, _tp = _dn_coast(_ymc, _tp, _P)
+                results["dnav_pdi_slip_revs"] = _slips
+                if not _go:
+                    results["descent_success"] = False
+                    results["descent_reason"] = "waived_off"
+                    results["full_success"] = False
+                    results["mission_failure"] = "descent_waived_off"
+                    return results, trajectories
+                results["dnav_pdi_get_s"] = float(_t0)
+                results["dnav_pdi_alt_km"] = float((np.linalg.norm(_y0[:3]) - R_MOON) / 1000.0)
+                # The surface phase seeds its phase-local streams (EVA consumables, surface SPE)
+                # on the landing longitude; keep the schedule descent's value there so the
+                # surface draws, like the rest of the timeline, match the validated lineage.
+                if desc.get("success") and desc.get("land_lon_deg") is not None:
+                    results["dnav_seed_land_lon_deg"] = float(desc["land_lon_deg"])
+                desc = phase_powered_descent_lgc(_y0, _t0, perturb, dict(_nav, e_r=_er0, e_v=_ev0),
+                                                 rng=_rng_dn, slosh_bias_s=_slosh)
+                for _k, _v in desc["dnav_events"].items():
+                    results["dnav_" + _k] = _v
+                results["dnav_lr_first_dh_ft"] = desc["dnav_lr_first_dh_ft"]
+                results["dnav_p66_s"] = desc["dnav_p66_s"]
+                results["dnav_bingo"] = desc["dnav_bingo"]
+                results["dnav_committed"] = desc["dnav_committed"]
+                results["dnav_descent_tfi_s"] = float(desc["final_t"] - _t0)
+                if desc.get("success"):
+                    results["dnav_touchdown_get_s"] = float(desc["final_t"])
+                    if globals().get("ENABLE_DESCENT_FAILURE_MODES", False):
+                        # Same envelope as the legacy descent, with the sink rate at probe
+                        # contact counted (the legacy max(v_radial, 0) drops it).
+                        _vt = float(np.sqrt(max(-desc["touchdown_speed_v_ms"], 0.0) ** 2
+                                            + 2.0 * G_MOON * CONTACT_PROBE_LENGTH_M))
+                        _vh = desc["touchdown_speed_h_ms"]
+                        _ha = (1.22 if _vt <= 2.13 else
+                               (1.22 * (3.05 - _vt) / (3.05 - 2.13) if _vt <= 3.05 else 0.0))
+                        desc["touchdown_speed_v_ms"] = -_vt
+                        desc["hard_landing"] = bool(_vt > 3.05 or _vh > _ha)
+                        desc["lowlevel_light_early_s"] = _slosh
+                        desc["agc_1202_alarm"] = bool(perturb.get("agc_1202_fired", False))
+                        desc["agc_1202_recovered"] = bool(perturb.get("agc_1202_recovered", True))
+                        desc["lr_dropout"] = bool(perturb.get("lr_dropout_fired", False))
             results["descent_success"] = desc["success"]
             if desc.get("success"):
                 _mark("touchdown", desc.get("final_t", t))
@@ -10333,7 +11016,9 @@ def run_mission(perturb=None, capture_trajectories=False):
                 trajectories["descent"] = (desc["trajectory_t"], desc["trajectory_y"])
             if not desc["success"]:
                 results["full_success"] = False
-                results["mission_failure"] = "descent_" + str(desc.get("reason", "unknown"))
+                _rsn = str(desc.get("reason", "unknown"))
+                results["mission_failure"] = (_rsn if _rsn.startswith("descent_abort")
+                                              else "descent_" + _rsn)
                 return results, trajectories
 
             results["fuel_margin_s"]         = desc["fuel_margin_s"]
@@ -10347,7 +11032,7 @@ def run_mission(perturb=None, capture_trajectories=False):
             # touchdown vs Site 2 in the LM's track (downrange + = long, past the site)
             (results["land_site_downrange_km"],
              results["land_site_crossrange_km"]) = _land_site_error_km(desc, _n_pdi)
-            t = desc["final_t"]
+            t = _t_sched if _dnav_on else desc["final_t"]
 
             # ---- Apollo 11-specific descent events: record + conditional escalation
             # These events were RECOVERABLE on the actual flight. We only escalate a

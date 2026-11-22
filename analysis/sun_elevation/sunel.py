@@ -2,7 +2,9 @@
 
     APOLLO_LAUNCH_DELAY_H=<slot delay> venv/bin/python sunel.py <run_dir> <out.csv>
 
-Touchdown time = pdi_get_s + 760 s (Apollo 11 PDI->touchdown 12.6 min; the sun moves ~0.5 deg/h, so the error is ~0.1 deg).
+Touchdown time = the flown touchdown (dnav_touchdown_get_s) when the run flew the guided descent
+(APOLLO_DESCENT_NAV=1), else pdi_get_s + 760 s (Apollo 11 PDI->touchdown 12.6 min; the sun moves
+~0.5 deg/h, so the error is ~0.1 deg).
 Site direction from land_lat_deg / land_lon_deg (IAU selenographic, as phase_descent reports them).
 """
 import json, os, sys
@@ -14,7 +16,7 @@ run, out = sys.argv[1], sys.argv[2]
 cfg = json.load(open(f"{run}/run_config.json"))
 assert abs(cfg["_LAUNCH_DELAY_H"] - A._LAUNCH_DELAY_H) < 1e-9, (cfg["_LAUNCH_DELAY_H"], A._LAUNCH_DELAY_H)
 df = pd.read_csv(f"{run}/results.csv", low_memory=False)
-ok = df.land_lat_deg.notna() & df.pdi_get_s.notna()
+ok = df.land_lat_deg.notna() & (df.pdi_get_s.notna() | (df.dnav_touchdown_get_s.notna() if "dnav_touchdown_get_s" in df else False))
 
 def sun_el(t, lat, lon):
     xb, yb, zb = A._moon_fixed_axes_ofdate(t)
@@ -26,7 +28,7 @@ def sun_el(t, lat, lon):
 
 rows = []
 for _, r in df[ok].iterrows():
-    t = float(r.pdi_get_s) + 760.0
+    t = float(r.dnav_touchdown_get_s) if pd.notna(r.get("dnav_touchdown_get_s")) else float(r.pdi_get_s) + 760.0
     rows.append((int(r.trial), t, r.land_lat_deg, r.land_lon_deg, sun_el(t, r.land_lat_deg, r.land_lon_deg),
                  bool(r.full_success) if pd.notna(r.full_success) else False, r.mission_failure))
 o = pd.DataFrame(rows, columns=["trial", "t_td_s", "lat", "lon", "sun_el_deg", "full_success", "mission_failure"])
@@ -35,5 +37,5 @@ e = o.sun_el_deg
 print(f"{run}: delay {A._LAUNCH_DELAY_H:g} h, {len(o)} touchdowns | sun el min {e.min():.2f} p1 {e.quantile(.01):.2f} "
       f"median {e.median():.2f} p99 {e.quantile(.99):.2f} max {e.max():.2f} | landing GET median {o.t_td_s.median()/3600:.2f} h "
       f"| site median {o.lat.median():.3f}, {o.lon.median():.3f}")
-for lo_, hi_ in ((5, 14), (6.7, 16.8)):
+for lo_, hi_ in ((5, 20), (5, 14), (6.7, 16.8)):
     print(f"   outside [{lo_}, {hi_}] deg: {int(((e < lo_) | (e > hi_)).sum())}")

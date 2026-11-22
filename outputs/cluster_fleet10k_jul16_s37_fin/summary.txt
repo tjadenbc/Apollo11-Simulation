@@ -3,20 +3,20 @@ APOLLO 11 PHYSICS-INTEGRATED SIMULATION — MONTE CARLO RESULTS
 ======================================================================
 Package: APOLLO11_NOMINAL_JUL16_BUILD1  sha256 3a3a4b0e1d4ac3b9  (Apollo 11, as-planned doctrine (Site 2, planned LOI/LOI-2/TEI targets), launch opportunity 1969-07-16)
 Total trials: 10000
-Mission success (landed + crew returned alive): 8380/10000 (83.8%)
-  of which flawless (no in-flight anomaly):     8226/10000 (82.3%)
+Mission success (landed + crew returned alive): 8341/10000 (83.4%)
+  of which flawless (no in-flight anomaly):     8191/10000 (81.9%)
 
 PHASE SURVIVAL (cumulative — % reaching each phase)
 ----------------------------------------------------------------------
   Launch (Saturn V → parking orbit)         9784/10000  ( 97.8%)
   Captured into lunar SOI (post-MCC)        9224/10000  ( 92.2%)
-  LOI + powered descent landing             8774/10000  ( 87.7%)
-  Surface stay + LM ascent                  8550/10000  ( 85.5%)
-  Rendezvous + TEI + reach entry IF         8425/10000  ( 84.2%)
-  Survived atmospheric entry                8226/10000  ( 82.3%)
-  MISSION SUCCESS (landed + returned)       8380/10000  ( 83.8%)
+  LOI + powered descent landing             8721/10000  ( 87.2%)
+  Surface stay + LM ascent                  8503/10000  ( 85.0%)
+  Rendezvous + TEI + reach entry IF         8380/10000  ( 83.8%)
+  Survived atmospheric entry                8191/10000  ( 81.9%)
+  MISSION SUCCESS (landed + returned)       8341/10000  ( 83.4%)
 
-FAILURE MODE BREAKDOWN — what went wrong in the 1620 failed missions
+FAILURE MODE BREAKDOWN — what went wrong in the 1659 failed missions
 (trials where the crew landed AND all returned alive are successes, not failures,
  even if a recovered anomaly occurred — they are excluded from the counts below)
 ----------------------------------------------------------------------
@@ -52,19 +52,7 @@ FAILURE MODE BREAKDOWN — what went wrong in the 1620 failed missions
              (land + return all alive) they are counted as MISSION SUCCESSES
              with a recovered anomaly, NOT as failures in this row.
 
-   112 (  1.1%)  LM ran out of fuel during powered descent
-             The Lunar Module's Descent Propulsion System (DPS) consumed all
-             available propellant before touchdown. A nominal, anomaly-free
-             descent from the ~15 km PDI lands with a large reserve (close to
-             Apollo's planned ~2-minute hover budget), but a long manual
-             landing-site redesignation — flying level to overfly hazardous
-             terrain, as Apollo 11 did across a boulder field — combined with
-             DPS performance dispersions (ISP, thrust) can eat that reserve.
-             Apollo 11 itself touched down within tens of seconds of the
-             abort threshold; this is the rare tail where the overfly
-             outlasts the propellant.
-
-   100 (  1.0%)  LM surface electrical/switchgear failure
+    99 (  1.0%)  LM surface electrical/switchgear failure
              An unrecoverable LM electrical fault on the surface prevents
              arming the ascent engine (anchored to Apollo 11's snapped arming
              circuit breaker). The LM crew is stranded; Collins returns
@@ -81,6 +69,19 @@ FAILURE MODE BREAKDOWN — what went wrong in the 1620 failed missions
              orbit with tighter consumables than Apollo 13's free-return
              geometry.
 
+    88 (  0.9%)  Descent abort: no landing-radar data by 10,000 ft
+             Flight Mission Rule: without landing-radar altitude updates the
+             descent cannot safely continue, so the crew aborts at a
+             computer-estimated 10,000 ft (Apollo 14 nearly did). Survivable
+             abort to orbit.
+
+    73 (  0.7%)  Descent abort at bingo (land-or-abort call)
+             The crew was still more than 100 ft up when the land-or-abort
+             point came (20 s of propellant before depletion, called from the
+             slosh-biased low-level light), so by mission rule they aborted:
+             the ascent stage staged off and returned to orbit for
+             rendezvous. Survivable.
+
     56 (  0.6%)  S-IVB failed to ignite for parking orbit
              The J-2 engine on the third stage failed to fire after S-II
              burnout. With no third-stage burn, the stack remained on a
@@ -93,7 +94,7 @@ FAILURE MODE BREAKDOWN — what went wrong in the 1620 failed missions
              limit; Apollo 15 landed at ~11°). No ascent is possible and no
              rescue capability exists.
 
-    33 (  0.3%)  SM systems failure — LM on surface
+    32 (  0.3%)  SM systems failure — LM on surface
              Catastrophic SM failure while the LM is on the surface: Collins
              is alone in the failing CSM, the LM must launch immediately
              outside its window, and the stack attempts a lifeboat return —
@@ -107,45 +108,57 @@ FAILURE MODE BREAKDOWN — what went wrong in the 1620 failed missions
              same path that brought Apollo 13 home. The mission fails (no
              lunar orbit) but the crew almost always survives.
 
-    12 (  0.1%)  EVA suit/PLSS terminal failure
-             A terminal suit/PLSS failure during the surface EVA (0 failures
-             in 28 program man-EVAs; the OPS backup was never used). Modeled
-             as one LM-crew death; the partner and Collins return.
-
     10 (  0.1%)  APS (ascent engine) failed
              The Lunar Module ascent stage engine failed to ignite or shut
              down prematurely. With no ascent capability, the crew is
              stranded.
 
-    10 (  0.1%)  Ascent-rendezvous docking failed
-             The LM reached the CSM but the docking mechanism failed to hard-
-             dock (sourced ~0.95%/docking). The documented contingency is a
-             suited EVA crew transfer. LM-crew exposure; Collins safe in the
-             CSM.
-
-    10 (  0.1%)  Micrometeoroid penetrated the crew cabin
-             A natural-flux micrometeoroid punctured the crew-cabin pressure
-             hull (orbital debris excluded — that flux is a post-1969
-             artifact). A hull puncture at mission velocities is
-             catastrophic. The rate scales with total time in space.
-
-     9 (  0.1%)  Ignition failure at TEI
+    10 (  0.1%)  Ignition failure at TEI
              The single, non-redundant SPS engine failed to start for TEI.
              Once captured in lunar orbit there is no free-return fallback,
              and the LM lifeboat has already been jettisoned before TEI — the
              crew is stranded with no propulsion to leave lunar orbit.
+
+     9 (  0.1%)  EVA suit/PLSS terminal failure
+             A terminal suit/PLSS failure during the surface EVA (0 failures
+             in 28 program man-EVAs; the OPS backup was never used). Modeled
+             as one LM-crew death; the partner and Collins return.
 
      9 (  0.1%)  Saturn V S-IC stage underperformance
              The first stage couldn't generate enough thrust to climb out of
              the lower atmosphere — typically caused by multiple F-1 engine
              failures early in flight. The vehicle decelerated and fell back.
 
-     8 (  0.1%)  Ablative heatshield breach at entry
+     7 (  0.1%)  Micrometeoroid penetrated the crew cabin
+             A natural-flux micrometeoroid punctured the crew-cabin pressure
+             hull (orbital debris excluded — that flux is a post-1969
+             artifact). A hull puncture at mission velocities is
+             catastrophic. The rate scales with total time in space.
+
+     6 (  0.1%)  Ablative heatshield breach at entry
              A char-through or delamination of the ablative heatshield during
              the ~11 km/s lunar-return entry — a material/bond failure of the
              shield itself, independent of the g-load corridor. Catastrophic.
 
-     2 (  0.0%)  Guidance platform unrecoverably lost
+     6 (  0.1%)  Ascent-rendezvous docking failed
+             The LM reached the CSM but the docking mechanism failed to hard-
+             dock (sourced ~0.95%/docking). The documented contingency is a
+             suited EVA crew transfer. LM-crew exposure; Collins safe in the
+             CSM.
+
+     4 (  0.0%)  LM ran out of fuel during powered descent
+             The Lunar Module's Descent Propulsion System (DPS) consumed all
+             available propellant before touchdown. A nominal, anomaly-free
+             descent from the ~15 km PDI lands with a large reserve (close to
+             Apollo's planned ~2-minute hover budget), but a long manual
+             landing-site redesignation — flying level to overfly hazardous
+             terrain, as Apollo 11 did across a boulder field — combined with
+             DPS performance dispersions (ISP, thrust) can eat that reserve.
+             Apollo 11 itself touched down within tens of seconds of the
+             abort threshold; this is the rare tail where the overfly
+             outlasts the propellant.
+
+     1 (  0.0%)  Guidance platform unrecoverably lost
              The primary inertial guidance platform (IMU/optics) suffered an
              unrecoverable loss. On a crewed vehicle this is largely
              survivable: the crew flies on the backup attitude reference and
@@ -188,29 +201,14 @@ MONTE CARLO DISPERSION STATISTICS (1-σ where applicable)
   Parking orbit perigee (km)       mean=   181.03 std=    26.86 min=     0.00 max=   192.31
   Parking orbit apogee (km)        mean=   181.12 std=    27.17 min=     0.00 max=   588.28
   TLI ΔV (m/s)                     mean=  3141.62 std=     0.59 min=  3139.60 max=  3148.17
-  MCC ΔV (m/s)                     mean=     4.92 std=     4.29 min=     0.00 max=    65.72
-  LOI ΔV (m/s)                     mean=   883.98 std=     2.23 min=   877.45 max=   901.59
-  Periapsis (km)                   mean=   114.06 std=     9.02 min=    70.79 max=   156.32
-  Descent fuel margin (s)          mean=    77.83 std=    18.81 min=     0.79 max=   112.82
-  Entry FPA (deg)                  mean=    -6.46 std=     0.09 min=    -6.82 max=    -6.12
-  Peak entry g                     mean=     6.35 std=     0.36 min=     5.43 max=     8.29
-  Splashdown dispersion (km, from nominal) mean=    40.75 std=   169.17 min=     0.08 max=  9593.46
-  Abs. splash miss from recovery target (km) mean=     3.28 std=     1.86 min=     0.08 max=    79.73
-
-======================================================================
-PHASE TIMING (mission-elapsed duration across trials)
-======================================================================
-PHASE                          MIN       AVG       MAX   APOLLO 11  AVG vs A11
-Launch to orbit           11.4 min  11.7 min  16.6 min    11.9 min         -1%
-Parking orbit + TLI          2.6 h     2.6 h     2.6 h       2.5 h         +3%
-Translunar coast            3.04 d    3.04 d    3.04 d      3.05 d         -0%
-Lunar orbit (LOI->PDI)      26.0 h    26.7 h    26.8 h      26.7 h         +0%
-Powered descent           10.6 min  10.7 min  11.5 min    12.6 min        -15%
-Surface stay                21.6 h    21.6 h    21.6 h      21.6 h         -0%
-Ascent to orbit            7.2 min   7.3 min   7.5 min     7.2 min         +1%
-Rendezvous to TEI           10.3 h    11.0 h    18.3 h      10.9 h         +1%
-Trans-earth coast           2.20 d    2.48 d    2.59 d      2.49 d         -0%
-Entry to splashdown       14.0 min  15.4 min  15.8 min    15.5 min         -0%
+  MCC ΔV (m/s)                     mean=     4.93 std=     4.33 min=     0.00 max=    65.72
+  LOI ΔV (m/s)                     mean=   883.99 std=     2.23 min=   877.45 max=   901.59
+  Periapsis (km)                   mean=   114.07 std=     9.02 min=    70.79 max=   156.32
+  Descent fuel margin (s)          mean=    60.33 std=    20.70 min=     0.52 max=   117.62
+  Entry FPA (deg)                  mean=    -6.46 std=     0.09 min=    -6.82 max=    -6.04
+  Peak entry g                     mean=     6.35 std=     0.36 min=     5.43 max=     8.85
+  Splashdown dispersion (km, from nominal) mean=    42.26 std=   180.61 min=     0.08 max=  9593.46
+  Abs. splash miss from recovery target (km) mean=     3.34 std=     3.22 min=     0.07 max=   257.65
 
 ======================================================================
 KNOWN LIMITATIONS
@@ -246,11 +244,11 @@ KNOWN LIMITATIONS
    fixed-epoch closest-approach correction onto the package's close-
    approach plan, and the trans-Earth chain targets the full entry
    point. TEI ignites at the package's epoch along its direction as
-   the seed of the consumer's 3-DOF corrector (5,880 of 8,425
+   the seed of the consumer's 3-DOF corrector (5,861 of 8,380
    returns); when that burn reaches no entry the TEI scan fallback
-   flies the return (2,545). The Apollo fire/waive pattern emerges
+   flies the return (2,519). The Apollo fire/waive pattern emerges
    untuned (83% of the fleet flies exactly one translunar correction;
-   trans-Earth median 2 burns and 1.5 m/s vs Apollo's single 1.5 m/s
+   trans-Earth median 1 burns and 1.5 m/s vs Apollo's single 1.5 m/s
    MCC-5). The RESIDUAL is that this is a DISCRETE-slot schedule-
    keeper, not a true continuous filter: its knowledge sigmas and ~50
    km deadband are pre-mission-analysis estimates and the trans-Earth
@@ -288,11 +286,11 @@ KNOWN LIMITATIONS
    downrange (largest shift 60 s). All three predict from the trial's
    TRUE state with the undispersed descent model — there is no lunar-
    orbit navigation error — so the landing miss from Site 2 (median
-   1.7 km, 95th percentile 4.5 km, max 9.8 km over 8,774 landings)
+   1.7 km, 95th percentile 4.3 km, max 8.8 km over 8,721 landings)
    measures targeting precision. It is tighter than Apollo 11's own
    touchdown ~6.4 km west of its target, which the crew flew manually
    past a boulder field. The calibrated mascon long-landing proxy
-   (MASCON_DOWNRANGE_*, mean 4.0 km long) is recorded per trial as
+   (MASCON_DOWNRANGE_*, mean nan km long) is recorded per trial as
    land_downrange_err_m and is NOT added to that miss.
 
 5. Surface operations — coefficients are estimate-grade.
@@ -388,7 +386,7 @@ KNOWN LIMITATIONS
    dip lift-up to the physical entry-FPA floor, then a constant-drag
    plateau bleeds energy without skipping — on the sourced US Standard
    Atmosphere 1976 (ENABLE_USSA76_ENTRY). Peak g is 6.42 g at the
-   nominal / 6.32 g fleet median, matching Apollo's ~6.5 g. Each trial
+   nominal / 6.31 g fleet median, matching Apollo's ~6.5 g. Each trial
    aims at a recovery zone placed 2,784 km (Apollo's EI-to-splash
    design range) along its OWN entry ground track — or, with
    ENABLE_WATER_ZONE_REAIM on, when that point is on land or within 25
@@ -397,9 +395,9 @@ KNOWN LIMITATIONS
    within 10 km and at most 1 g above its design-range peak (1 trial
    here, it splashed in water); the nominal lands ~3 km from its zone
    and the fleet's guidance miss is ~3.2 km median (Apollo 11 splashed
-   ~3 km from its aim point). The tail: 3 returns splashed more than
-   25 km out (max ~80 km), all of them scan-fallback TEIs, entering
-   shallow at -6.12° to -6.15°. Splashdown is FLOWN, not geometric
+   ~3 km from its aim point). The tail: 2 returns splashed more than
+   25 km out (max ~258 km), 1 of them scan-fallback TEIs, entering
+   shallow at -6.04° to -6.14°. Splashdown is FLOWN, not geometric
    (ENABLE_APOLLO_ELS): a two-phase parachute descent (2 drogues → ~56
    m/s, 3 mains → ~9.8 m/s), wind drift, CM flotation (Apollo 11 was
    stable-2), and an Apollo-faithful parachute-failure mode. The

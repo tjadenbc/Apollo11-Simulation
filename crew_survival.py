@@ -317,6 +317,37 @@ SURVIVAL_MODEL = {
             "at fuel exhaustion in this simulation."
         ),
     },
+    # APOLLO_DESCENT_NAV aborts (mission rules) and the pre-PDI waive-off. The LM is
+    # healthy, so the abort is the normal ascent chain flown early: computed from the
+    # model's own rates -- abort-stage pyro 1.0e-4
+    # (PYRO_SEP_FAILURE_PROB class), APS ignition 1.0e-3 (APS_IGNITION_FAILURE_PROB),
+    # docking failure 0.0095 (PROB_DOCKING_FAILURE) of which 10 % fatal (the
+    # rendezvous_docking_failure entry): 0.999 x 0.9999 x (1 - 0.00095) = 0.998. The
+    # return leg is drawn separately (csm_solo_rate), as for every LM-phase abort.
+    # The aborts lie inside the FMR abort limits (the 20-s land-or-abort rule and the
+    # altitude/altitude-rate boundaries exist so that an abort can arrest the descent);
+    # no crewed LM abort was ever flown (abort staging was tested unmanned on Apollo 5).
+    "descent_abort_bingo": {
+        "p_survive": 0.998,
+        "outcome": "abort_stage_to_orbit_rendezvous",
+        "explanation": "Bingo (land-or-abort) reached above 100 ft: abort stage, ascent to orbit, rendezvous.",
+    },
+    "descent_abort_no_landing_radar": {
+        "p_survive": 0.998,
+        "outcome": "abort_stage_to_orbit_rendezvous",
+        "explanation": "No landing-radar data by 10,000 ft (FMR): abort to orbit, rendezvous.",
+    },
+    "descent_abort_no_throttle_recovery": {
+        "p_survive": 0.998,
+        "outcome": "abort_stage_to_orbit_rendezvous",
+        "explanation": "No throttle recovery by P64 + 15 s (FMR): abort to orbit, rendezvous.",
+    },
+    "descent_waived_off": {
+        "p_survive": 0.999,
+        "outcome": "no_pdi_rendezvous",
+        "explanation": ("PDI no-go twice: No-PDI+12 rendezvous of a healthy, unstaged LM; "
+                        "only the docking risk (0.0095 x 10 % fatal) applies."),
+    },
     "descent_breakup_on_landing": {
         "p_survive": 0.20,
         "outcome": "hard_landing_LM_damaged",
@@ -692,6 +723,53 @@ def _estimate_csm_solo_return_rate(df):
     return float(successes / denom)
 
 
+def _gc_dest(lat, lon, brg, d_nm):
+    """Great-circle destination (deg) from (lat, lon) along bearing brg (deg) for d_nm."""
+    R = 3440.065                      # Earth radius, nmi
+    la, lo, b, dd = np.radians(lat), np.radians(lon), np.radians(brg), d_nm / R
+    la2 = np.arcsin(np.sin(la) * np.cos(dd) + np.cos(la) * np.sin(dd) * np.cos(b))
+    lo2 = lo + np.arctan2(np.sin(b) * np.sin(dd) * np.cos(la), np.cos(dd) - np.sin(la) * np.sin(la2))
+    return np.degrees(la2), np.degrees(lo2)
+
+
+def _gc_dist_brg(lat1, lon1, lat2, lon2):
+    """(distance nmi, initial bearing deg) from point 1 to point 2."""
+    R = 3440.065
+    p1, p2, dl = np.radians(lat1), np.radians(lat2), np.radians(lon2 - lon1)
+    c = np.sin(p1) * np.sin(p2) + np.cos(p1) * np.cos(p2) * np.cos(dl)
+    d = R * np.arccos(np.clip(c, -1.0, 1.0))
+    b = np.degrees(np.arctan2(np.sin(dl) * np.cos(p2), np.cos(p1) * np.sin(p2) - np.sin(p1) * np.cos(p2) * np.cos(dl)))
+    return d, b
+
+
+def recovery_access_class(row):
+    """Apollo 11 MOR recovery areas for one splashdown -> (class, off_nominal).
+    Primary area: two 125-NM circles centred 25 and 275 NM uprange of the trial's aim
+    point (the RTCC target the recovery ship is positioned on), along the entry ground
+    track (toward the entry interface), joined by tangent lines (125 NM read as the
+    radius; the MOR text does not say). Contingency band: 40N-15S. off_nominal = outside
+    the primary area or an entry range over 2,000 NM (the MOR's primary-area limit)."""
+    vals = [row.get(k) for k in ('recovery_zone_lat', 'recovery_zone_lon', 'ei_lat', 'ei_lon',
+                                 'splash_lat', 'splash_lon')]
+    if any(v is None or pd.isna(v) for v in vals):
+        return '', False
+    zl, zo, el, eo, sl, so = (float(v) for v in vals)
+    _, brg_up = _gc_dist_brg(zl, zo, el, eo)
+    c1 = _gc_dest(zl, zo, brg_up, 25.0)
+    c2 = _gc_dest(zl, zo, brg_up, 275.0)
+    d1, _ = _gc_dist_brg(c1[0], c1[1], sl, so)
+    d2, _ = _gc_dist_brg(c2[0], c2[1], sl, so)
+    d0, b0 = _gc_dist_brg(zl, zo, sl, so)
+    along = d0 * np.cos(np.radians(b0 - brg_up))          # + = uprange
+    cross = d0 * np.sin(np.radians(b0 - brg_up))
+    primary = d1 <= 125.0 or d2 <= 125.0 or (25.0 <= along <= 275.0 and abs(cross) <= 125.0)
+    ent_range, _ = _gc_dist_brg(el, eo, sl, so)
+    offnom = (not primary) or ent_range > 2000.0
+    if primary:
+        return 'primary', offnom
+    return ('contingency_band' if -15.0 <= sl <= 40.0 else 'outside_band'), offnom
+
+
 def apply_survival_model(df, seed=42):
     """Add PER-ASTRONAUT crew survival columns to the results dataframe.
 
@@ -791,6 +869,19 @@ def apply_survival_model(df, seed=42):
                 outcome[i] = 'no_return_without_loi'
             elif _nr != 'free_return':
                 outcome[i] = _nr
+            # APOLLO_LM_FREE_GET_H (hours GET; unset = unchanged). The lifeboat return is
+            # flown on the LM's DPS, and until the CSM has docked with the LM and pulled it
+            # free of the S-IVB (ejection at 04:17 GET on Apollo 11, 4.28 h) there is no
+            # lifeboat to fly it. apollo11.py's direct abort (APOLLO_DIRECT_ABORT) solves the
+            # burn at failure + 5.58 h without asking whether the LM was ever extracted, so a
+            # service-module failure struck after TLI and before this time is scored as a
+            # crew loss here. Parking-orbit strikes carry no noloi_return and are untouched.
+            _lmf = os.environ.get("APOLLO_LM_FREE_GET_H", "")
+            if (_lmf and _nr != 'none' and str(fail) == 'sm_failure_translunar'
+                    and pd.notna(row.get('sm_failure_get_h'))
+                    and float(row.get('sm_failure_get_h')) < float(_lmf)):
+                p_mode = 0.0
+                outcome[i] = 'no_return_lander_not_free'
         exposed = crew_exposed_for_failure(fail)
 
         if exposed == "all":
@@ -880,7 +971,55 @@ def apply_survival_model(df, seed=42):
             # Record Collins's effective probability for reporting.
             psurv["Collins"][i] = csm_solo_rate
 
+    # APOLLO_RECOVERY_MODEL (default "none" = unchanged):
+    #  "access"   -- crew risk by recovery ACCESS TIME (Apollo 11 MOR M-932-69-11
+    #                pp. 76-89; JSC-09423 7.4.2): primary area <= 2 h -> 0; contingency
+    #                band 40N-15S (aircraft, <= 18 h) -> 0.5 %; elsewhere (<= 48 h)
+    #                -> 1.5 %. Engineering judgement: no loss-vs-delay data exists
+    #                (0 US losses to recovery delay; CM designed to 48 h afloat).
+    #  "distance" -- a sensitivity rule: splash_miss_km > 80 = mission
+    #                failure with a live crew; > 500 km adds APOLLO_RECOVERY_DIST_PLOSS.
+    # Only fully successful splashdowns are scored here (every abort class already
+    # carries its return in p_survive / csm_solo_rate). Separate random stream, so
+    # every existing draw is unchanged.
+    _rec_mode = os.environ.get("APOLLO_RECOVERY_MODEL", "none")
+    _rec_cls = [''] * n
+    _rec_p = np.zeros(n)
+    _rec_fail = np.zeros(n, dtype=bool)
+    _rec_offnom = np.zeros(n, dtype=bool)
+    if _rec_mode in ("access", "distance"):
+        _pl = [float(x) for x in os.environ.get("APOLLO_RECOVERY_PLOSS", "0,0.005,0.015").split(",")]
+        _pd = float(os.environ.get("APOLLO_RECOVERY_DIST_PLOSS", "0.015"))
+        u_rec = np.random.default_rng(seed + 7919).uniform(0, 1, n)
+        for i, row in df.iterrows():
+            if not bool(row.get('full_success')) or not pd.isna(row.get('mission_failure')):
+                continue
+            cls, offnom = recovery_access_class(row)
+            _rec_cls[i], _rec_offnom[i] = cls, offnom
+            if _rec_mode == "access":
+                _rec_p[i] = {"primary": _pl[0], "contingency_band": _pl[1],
+                             "outside_band": _pl[2]}.get(cls, 0.0)
+            else:
+                miss = row.get('splash_miss_km')
+                miss = 0.0 if pd.isna(miss) else float(miss)
+                _rec_fail[i] = miss > 80.0
+                _rec_p[i] = _pd if miss > 500.0 else 0.0
+            if _rec_p[i] > 0.0:
+                for name in CREW:
+                    psurv[name][i] = 1.0 - _rec_p[i]
+                if u_rec[i] < _rec_p[i]:
+                    for name in CREW:
+                        surv[name][i] = False
+                        dcause[name][i] = "recovery_access_delay"
+                    outcome[i] = "lost_awaiting_recovery"
+
     df = df.copy()
+    if _rec_mode in ("access", "distance"):
+        df['recovery_access_class'] = _rec_cls
+        df['recovery_p_loss'] = _rec_p
+        df['recovery_offnominal'] = _rec_offnom
+        df['recovery_mission_failure'] = _rec_fail
+    df.attrs['recovery_model'] = _rec_mode
     for name in CREW:
         df[f'psurv_{name}'] = psurv[name]
         df[f'survived_{name}'] = surv[name]
@@ -1099,6 +1238,15 @@ def generate_survival_report(df, outdir=OUTDIR):
     print(f"  ✓ mission_vs_crew.png")
 
 
+def offsite_landing_mask(df):
+    """True where a trial touched down without the as-planned DOI (the LOI fallback orbit).
+    All False for a fleet that never records doi_burn_time_s (as-planned DOI off)."""
+    if 'land_lat_deg' not in df.columns or 'doi_burn_time_s' not in df.columns \
+            or not df['doi_burn_time_s'].notna().any():
+        return pd.Series(False, index=df.index)
+    return df['land_lat_deg'].notna() & df['doi_burn_time_s'].isna()
+
+
 def main():
     csv_path = os.path.join(OUTDIR, "results.csv")
     print(f"Reading {csv_path}...")
@@ -1133,6 +1281,19 @@ def main():
     _objective_reached = _landed | _nl
     df['mission_success'] = (_objective_reached
                              & df['crew_survived'].fillna(False).astype(bool))
+    if 'recovery_mission_failure' in df.columns:     # APOLLO_RECOVERY_MODEL=distance only
+        df['mission_success'] = df['mission_success'] & ~df['recovery_mission_failure'].astype(bool)
+    # APOLLO_OFFSITE_NO_LANDING=1 (default off = unchanged): a
+    # touchdown flown from the LOI fallback orbit is not a landing. When the two-burn LOI
+    # solve fails, run_mission builds a synthetic parking orbit that is not aimed at the
+    # site and skips the as-planned DOI (no doi_burn_time_s), and the descent then lands
+    # wherever that orbit's perilune falls (2,700-4,600 km from the site, on the far side,
+    # in 7 trials of the paper's other-date fleets). In 1969 that is a NO-GO for PDI
+    # (CSM plane within 0.5 deg of the site, FMR 5-81; LM voice and telemetry, FMR 20-14B),
+    # so the trial scores as no landing; crew survival is left as simulated.
+    df['landing_offsite'] = offsite_landing_mask(df)
+    if os.environ.get("APOLLO_OFFSITE_NO_LANDING", "0") == "1":
+        df['mission_success'] = df['mission_success'] & ~df['landing_offsite']
 
     # Save augmented CSV
     out_csv = os.path.join(OUTDIR, "results_with_survival.csv")
